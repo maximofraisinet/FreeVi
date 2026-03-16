@@ -39,6 +39,10 @@ from moviepy import (
     VideoFileClip,
     concatenate_videoclips,
 )
+from dotenv import load_dotenv
+
+# Load environment variables from a .env file if present (optional)
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Configuration and logging
@@ -56,7 +60,12 @@ TARGET_FPS = 24
 TARGET_PRESET = "medium"  # x264 encoding preset
 
 # Directory where Kokoro models are stored (relative to this script)
-KOKORO_MODEL_DIR = Path(__file__).parent / "kokoro-v1.0"
+_env_kokoro = os.environ.get("KOKORO_MODEL_DIR", "")
+if _env_kokoro:
+    KOKORO_MODEL_DIR = Path(_env_kokoro)
+else:
+    KOKORO_MODEL_DIR = Path(__file__).parent / "kokoro-v1.0"
+
 KOKORO_ONNX_PATH = KOKORO_MODEL_DIR / "kokoro-v1.0.onnx"
 KOKORO_VOICES_PATH = KOKORO_MODEL_DIR / "voices-v1.0.bin"
 

@@ -10,6 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load .env file into the environment (so PEXELS_API_KEY and others are available)
+load_dotenv()
+
 from PyQt6.QtCore import (
     Q_ARG,
     QMetaObject,
@@ -617,7 +622,6 @@ class MainWindow(QMainWindow):
     def _get_kokoro_voices(self) -> list[str]:
         try:
             from kokoro_onnx import Kokoro
-            from pathlib import Path
             base = Path(__file__).parent / "kokoro-v1.0"
             onnx = base / "kokoro-v1.0.onnx"
             voices = base / "voices-v1.0.bin"
