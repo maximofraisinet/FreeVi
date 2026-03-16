@@ -139,9 +139,19 @@ STRICT RULES:
 - Generate between 4 and {max_scenes} scenes (adjust based on text length).
 - Each scene must be self-contained and flow naturally into the next.
 - "narrator_text": The narration text for this scene.
-- "video_query": Exactly 1 to 3 words in ENGLISH to search for stock video.
-  Must be visually descriptive and concrete (e.g. "ocean waves", "city traffic",
-  "laboratory research"). Avoid abstract terms.\
+- "video_query": 2 to 5 words in ENGLISH to search for a stock video clip.
+  CRITICAL: The query MUST visually represent the specific subject of THAT scene's
+  narrator_text, not the document topic in general.
+  Ask yourself: "What does a camera show while the narrator says this sentence?"
+  Rules for the query:
+    * Be concrete and visual — name objects, actions, or settings that can be filmed.
+    * Match the scene content — if the narrator discusses data analysis, write
+      "data analyst working computer", not "technology".
+    * Use 3-5 words for specificity; single generic words produce unrelated footage.
+    * Write in English regardless of the narration language.
+  Good examples:  "scientists analyzing dna samples", "city traffic aerial view",
+                  "students working laptops classroom", "factory assembly line robots"
+  Bad examples:   "technology", "science", "research", "nature landscape"\
 """
 
 _SYSTEM_PROMPT_TAIL = """\
@@ -225,11 +235,23 @@ def generate_script(
     model: str = "qwen3",
     max_scenes: int = 8,
     custom_instructions: str = "",
+    context_size: int = 8192,
 ) -> Script:
     """
     Sends the PDF text to a local LLM via Ollama to generate the video script.
 
     Uses format='json' to enforce structured JSON output.
+
+    Token budget strategy
+    ---------------------
+    Each scene in the JSON response costs roughly 120-150 tokens (narrator text
+    ~80 tokens + video_query + JSON overhead).  We reserve
+    ``num_predict = max_scenes * 160 + 256`` tokens for the output, then give
+    the remaining ``context_size - num_predict`` tokens to the input (system
+    prompt + PDF text).  The PDF text is truncated so the total fits.
+
+    If the response is still truncated (invalid JSON), the function retries
+    once with ``max_scenes`` halved, which frees more room for the output.
 
     Args:
         pdf_text: Text extracted from the PDF.
@@ -238,6 +260,8 @@ def generate_script(
         custom_instructions: Optional free-form instructions injected into the
             system prompt (language, tone, length, etc.). If empty, the
             DEFAULT_CUSTOM_INSTRUCTIONS are used as fallback.
+        context_size: Ollama num_ctx option — the model's context window in
+            tokens. Increase this if the PDF text is long. Default: 8192.
 
     Returns:
         Script with the list of scenes.
@@ -246,8 +270,32 @@ def generate_script(
         ConnectionError: If Ollama is not available.
         ValueError: If the response does not have the expected format.
     """
-    # Truncate text if too long to avoid exceeding the model's context
-    max_chars = 12000
+    return _generate_script_attempt(
+        pdf_text, model, max_scenes, custom_instructions, context_size, attempt=1
+    )
+
+
+def _generate_script_attempt(
+    pdf_text: str,
+    model: str,
+    max_scenes: int,
+    custom_instructions: str,
+    context_size: int,
+    attempt: int,
+) -> Script:
+    """
+    Single attempt at script generation. Called by generate_script(); retried
+    with a smaller max_scenes if the JSON response is truncated.
+    """
+    # ── Token budget ──────────────────────────────────────────────────────────
+    # Reserve output tokens: ~160 tokens per scene + 256 for JSON scaffolding.
+    num_predict = max_scenes * 160 + 256
+    # Tokens available for input (system prompt + user text).
+    # System prompt + wrappers ≈ 400 tokens; give the rest to the PDF text.
+    input_token_budget = context_size - num_predict - 400
+    # 1 token ≈ 3 characters (conservative estimate for mixed-language text).
+    max_chars = max(500, input_token_budget * 3)
+
     if len(pdf_text) > max_chars:
         pdf_text = pdf_text[:max_chars] + "\n\n[... text truncated due to length ...]"
         log.warning(f"  Text truncated to {max_chars} characters for the model.")
@@ -258,6 +306,12 @@ def generate_script(
         f"---START OF TEXT---\n{pdf_text}\n---END OF TEXT---"
     )
 
+    log.info(
+        f"  Context window: {context_size} tokens (num_ctx), "
+        f"output reserved: {num_predict} tokens (num_predict), "
+        f"max scenes: {max_scenes}"
+    )
+
     try:
         response = ollama.chat(
             model=model,
@@ -266,6 +320,7 @@ def generate_script(
                 {"role": "user", "content": user_prompt},
             ],
             format="json",
+            options={"num_ctx": context_size, "num_predict": num_predict},
         )
     except Exception as e:
         raise ConnectionError(
@@ -278,23 +333,52 @@ def generate_script(
     content = response["message"]["content"]
     log.info(f"  LLM response received ({len(content)} characters)")
 
+    # Check for Ollama stop reason — if the model stopped due to length the
+    # JSON is certainly truncated; retry immediately without even trying to parse.
+    stop_reason = (
+        response.get("done_reason", "")
+        or response.get("stop_reason", "")
+    )
+    if stop_reason == "length" and attempt == 1:
+        reduced = max(2, max_scenes // 2)
+        log.warning(
+            f"  Response cut off by token limit (done_reason=length). "
+            f"Retrying with max_scenes={reduced}..."
+        )
+        return _generate_script_attempt(
+            pdf_text, model, reduced, custom_instructions, context_size, attempt=2
+        )
+
     cleaned = _clean_json(content)
     log.debug(f"  JSON after cleaning: {cleaned[:300]}")
 
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as e:
-        # Last attempt: replace typographic quotes and retry
+        # Try replacing typographic quotes first
         cleaned2 = (
             cleaned
-            .replace("\u201c", '"').replace("\u201d", '"')  # "" → ""
-            .replace("\u2018", "'").replace("\u2019", "'")  # '' → ''
+            .replace("\u201c", '"').replace("\u201d", '"')
+            .replace("\u2018", "'").replace("\u2019", "'")
         )
         try:
             data = json.loads(cleaned2)
         except json.JSONDecodeError:
+            # If this is the first attempt, the truncation may not have been
+            # caught by done_reason — retry with fewer scenes before giving up.
+            if attempt == 1:
+                reduced = max(2, max_scenes // 2)
+                log.warning(
+                    f"  JSON invalid (likely truncated). "
+                    f"Retrying with max_scenes={reduced}..."
+                )
+                return _generate_script_attempt(
+                    pdf_text, model, reduced, custom_instructions,
+                    context_size, attempt=2,
+                )
             raise ValueError(
-                f"The LLM did not return valid JSON even after attempting to clean the response.\n"
+                f"The LLM did not return valid JSON even after attempting to clean "
+                f"the response.\n"
                 f"First 500 characters received:\n{content[:500]}\n"
                 f"JSON error: {e}"
             )
@@ -344,8 +428,8 @@ def generate_script(
             video_query = "nature landscape"  # Generic fallback
             log.warning(f"  Scene {i}: no video_query, using fallback '{video_query}'")
 
-        # Limit query to 3 words maximum
-        video_query = " ".join(video_query.split()[:3])
+        # Limit query to 5 words maximum
+        video_query = " ".join(video_query.split()[:5])
 
         script.scenes.append(
             Scene(number=i, narrator_text=narrator_text, video_query=video_query)
@@ -492,14 +576,25 @@ def get_pexels_api_key() -> str:
     return api_key
 
 
-def search_pexels_video(query: str, api_key: str, orientation: str = "landscape") -> dict | None:
+def search_pexels_video(
+    query: str,
+    api_key: str,
+    orientation: str = "landscape",
+    target_duration: float = 0.0,
+) -> dict | None:
     """
     Searches for a video on Pexels and returns info about the best result.
 
+    Fetches up to 15 candidates and selects the one whose duration is closest
+    to *target_duration* (the audio length). This avoids always picking the
+    first (most popular) result, which is often only loosely related to the
+    query despite having a matching tag.
+
     Args:
-        query: Search terms in English (max 3 words).
+        query: Search terms in English (2-5 words).
         api_key: Pexels API key.
         orientation: "landscape", "portrait" or "square".
+        target_duration: Preferred video duration in seconds (0 = pick longest).
 
     Returns:
         Dict with 'url' (download link), 'width', 'height', 'duration' or None.
@@ -507,9 +602,9 @@ def search_pexels_video(query: str, api_key: str, orientation: str = "landscape"
     headers = {"Authorization": api_key}
     params = {
         "query": query,
-        "per_page": 5,
+        "per_page": 15,
         "orientation": orientation,
-        "size": "medium",  # Balance between quality and file size
+        "size": "medium",
     }
 
     try:
@@ -525,39 +620,55 @@ def search_pexels_video(query: str, api_key: str, orientation: str = "landscape"
         log.warning(f"  No videos found for '{query}'")
         return None
 
-    # Select the first video with available files
+    # Collect all valid candidates (video + best file) from the full result set
+    candidates = []
     for video in videos:
         files = video.get("video_files", [])
-        # Prefer HD (1280x720 or higher) in mp4
-        best = None
-        for file in files:
-            if file.get("file_type") != "video/mp4":
-                continue
-            w = file.get("width", 0)
-            h = file.get("height", 0)
-            # Prefer resolutions >= 720p
-            if w >= 1280 and h >= 720:
-                if best is None or w < best.get("width", 9999):
-                    # Take the smallest that is >= HD (faster download)
-                    best = file
+        best_file = None
 
-        # If no HD found, take the first available mp4
-        if best is None:
-            for file in files:
-                if file.get("file_type") == "video/mp4":
-                    best = file
+        # Prefer the smallest resolution that is still >= 720p HD
+        for f in files:
+            if f.get("file_type") != "video/mp4":
+                continue
+            w = f.get("width", 0)
+            h = f.get("height", 0)
+            if w >= 1280 and h >= 720:
+                if best_file is None or w < best_file.get("width", 9999):
+                    best_file = f
+
+        # Fallback: any mp4 if no HD found
+        if best_file is None:
+            for f in files:
+                if f.get("file_type") == "video/mp4":
+                    best_file = f
                     break
 
-        if best:
-            return {
-                "url": best["link"],
-                "width": best.get("width", 0),
-                "height": best.get("height", 0),
+        if best_file:
+            candidates.append({
+                "url": best_file["link"],
+                "width": best_file.get("width", 0),
+                "height": best_file.get("height", 0),
                 "duration": video.get("duration", 0),
-            }
+            })
 
-    log.warning(f"  No mp4 files found for '{query}'")
-    return None
+    if not candidates:
+        log.warning(f"  No mp4 files found for '{query}'")
+        return None
+
+    # Select the candidate whose duration is closest to the target audio length.
+    # If target_duration is 0 (unknown), pick the longest video (more material
+    # for looping and less likely to loop with a visible cut).
+    if target_duration > 0:
+        best = min(candidates, key=lambda c: abs(c["duration"] - target_duration))
+    else:
+        best = max(candidates, key=lambda c: c["duration"])
+
+    log.info(
+        f"  Pexels: {len(candidates)} candidates for '{query}' → "
+        f"selected {best['duration']}s video "
+        f"(target {target_duration:.1f}s)"
+    )
+    return best
 
 
 def download_video(url: str, output_path: str) -> bool:
@@ -593,30 +704,61 @@ def download_video(url: str, output_path: str) -> bool:
         return False
 
 
-def search_and_download_video(query: str, api_key: str, output_path: str) -> bool:
+def search_and_download_video(
+    query: str,
+    api_key: str,
+    output_path: str,
+    orientation: str = "landscape",
+    target_duration: float = 0.0,
+) -> bool:
     """
-    Searches and downloads a video from Pexels. If the main query fails,
-    tries generic fallbacks.
+    Searches and downloads a video from Pexels.
+
+    Fallback strategy (in order):
+      1. Full query (e.g. "scientists analyzing dna samples")
+      2. First two words of the query (e.g. "scientists analyzing")
+      3. First word of the query (e.g. "scientists")
+      4. Generic domain-neutral fallbacks: "people working", "abstract motion",
+         "urban timelapse"
 
     Args:
-        query: Original search terms.
+        query: Original search terms (2-5 words from the LLM).
         api_key: Pexels API key.
         output_path: Path where the video will be saved.
+        orientation: "landscape", "portrait" or "square".
+        target_duration: Audio duration in seconds — used to pick the best
+            Pexels result (closest duration = less looping).
 
     Returns:
         True if downloaded successfully.
     """
-    # Try with the original query
-    info = search_pexels_video(query, api_key)
+    words = query.split()
 
-    # Fallbacks if the original query yields no results
-    if info is None:
-        fallbacks = ["nature", "abstract background", "technology"]
-        for fb in fallbacks:
-            log.info(f"  Trying fallback: '{fb}'")
-            info = search_pexels_video(fb, api_key)
-            if info is not None:
-                break
+    # Build the fallback chain: progressively shorter versions of the original
+    # query, then generic fallbacks as last resort.
+    attempts: list[str] = [query]
+    if len(words) > 2:
+        attempts.append(" ".join(words[:2]))   # first two words
+    if len(words) > 1:
+        attempts.append(words[0])              # first word only
+    attempts += ["people working", "abstract motion", "urban timelapse"]
+
+    # Remove duplicates while preserving order
+    seen: set[str] = set()
+    unique_attempts: list[str] = []
+    for a in attempts:
+        if a not in seen:
+            seen.add(a)
+            unique_attempts.append(a)
+
+    info = None
+    for attempt in unique_attempts:
+        log.info(f"  Searching Pexels: '{attempt}'")
+        info = search_pexels_video(attempt, api_key, orientation, target_duration)
+        if info is not None:
+            if attempt != query:
+                log.warning(f"  Original query '{query}' failed — using fallback '{attempt}'")
+            break
 
     if info is None:
         log.error(f"  Could not find any video (query: '{query}')")
@@ -824,7 +966,10 @@ class VideoGenerator:
                 self.temp_dir, f"scene_{scene.number:02d}_raw.mp4"
             )
             success = search_and_download_video(
-                scene.video_query, self.pexels_api_key, raw_video_path
+                scene.video_query,
+                self.pexels_api_key,
+                raw_video_path,
+                target_duration=duration,
             )
 
             if not success:

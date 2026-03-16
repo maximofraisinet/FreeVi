@@ -33,6 +33,7 @@ def _config_path() -> Path:
 DEFAULTS: dict = {
     "model":               "qwen3",
     "max_scenes":          8,
+    "context_size":        8192,
     "voice":               "im_nicola",
     "speed":               100,          # slider int (50–200); divide by 100 → actual speed
     "resolution":          "1920×1080 (Full HD)",
@@ -127,6 +128,7 @@ def save(config: dict) -> None:
     to_save = {
         "model":               config.get("model",               DEFAULTS["model"]),
         "max_scenes":          config.get("max_scenes",          DEFAULTS["max_scenes"]),
+        "context_size":        config.get("context_size",        DEFAULTS["context_size"]),
         "voice":               config.get("voice",               DEFAULTS["voice"]),
         # Convert float speed → slider int so load_from_config() can apply it directly
         "speed":               int(config.get("speed", 1.0) * 100),
@@ -160,6 +162,7 @@ def save_from_panel(panel) -> None:
     raw = {
         "model":               panel.combo_model.currentText(),
         "max_scenes":          panel.spin_max_scenes.value(),
+        "context_size":        panel.spin_context_size.value(),
         "voice":               panel.combo_voice.currentText(),
         "speed":               panel.slider_speed.value() / 100.0,
         "resolution":          res_map.get(panel.combo_res.currentText(), (1920, 1080)),

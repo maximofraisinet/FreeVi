@@ -18,9 +18,11 @@ load_dotenv()
 from PyQt6.QtCore import (
     Q_ARG,
     QMetaObject,
+    QMutex,
     QObject,
     Qt,
     QThread,
+    QWaitCondition,
     pyqtSignal,
 )
 from PyQt6.QtGui import QColor, QFont, QIcon, QPalette, QTextCursor
@@ -28,6 +30,8 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
@@ -46,6 +50,8 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -70,18 +76,100 @@ class QtLogHandler(logging.Handler, QObject):
 
 
 # ---------------------------------------------------------------------------
-# Worker thread to run the pipeline without blocking the UI
+# Script review dialog — shown after the LLM generates the script so the
+# user can edit video_query values before any audio/video is processed.
+# ---------------------------------------------------------------------------
+class ScriptReviewDialog(QDialog):
+    """
+    Modal dialog that shows the generated script (narrator text + video query)
+    and lets the user edit the video_query for each scene before download.
+    """
+
+    def __init__(self, scenes: list, parent=None):
+        """
+        Args:
+            scenes: List of Scene dataclass instances from generate_script().
+            parent: Parent widget.
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Review Script — Edit Video Queries")
+        self.setMinimumSize(900, 500)
+        self.resize(1000, 580)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        info = QLabel(
+            "The AI generated the script below. "
+            "You can edit the <b>Video Query</b> column before downloading stock footage.\n"
+            "Queries are searched on Pexels — be specific and visual (e.g. "
+            "<i>\"scientists analyzing dna\"</i>, <i>\"city traffic aerial view\"</i>)."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._table = QTableWidget(len(scenes), 2)
+        self._table.setHorizontalHeaderLabels(["Narrator Text", "Video Query (editable)"])
+        self._table.horizontalHeader().setStretchLastSection(False)
+        self._table.setColumnWidth(0, 620)
+        self._table.setColumnWidth(1, 280)
+        self._table.verticalHeader().setDefaultSectionSize(60)
+        self._table.setWordWrap(True)
+        self._table.setAlternatingRowColors(True)
+
+        for row, scene in enumerate(scenes):
+            # Narrator text — read-only
+            narrator_item = QTableWidgetItem(scene.narrator_text)
+            narrator_item.setFlags(narrator_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            narrator_item.setToolTip(scene.narrator_text)
+            self._table.setItem(row, 0, narrator_item)
+
+            # Video query — editable
+            query_item = QTableWidgetItem(scene.video_query)
+            query_item.setToolTip(
+                "Edit this to improve the stock footage match.\n"
+                "Use 2-5 specific English words describing what the camera should show."
+            )
+            self._table.setItem(row, 1, query_item)
+
+        self._table.resizeRowsToContents()
+        layout.addWidget(self._table)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Continue with these queries")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel pipeline")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_queries(self) -> list[str]:
+        """Returns the (possibly edited) video query for each row."""
+        return [
+            (self._table.item(row, 1).text() or "").strip()
+            for row in range(self._table.rowCount())
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Pipeline worker
 # ---------------------------------------------------------------------------
 class PipelineWorker(QThread):
     """
     Runs the VideoGenerator pipeline in a separate thread.
     Emits signals to communicate progress, logs and result to the UI.
+
+    After the script is generated the worker pauses and emits script_ready.
+    The main thread shows ScriptReviewDialog; when the user confirms it calls
+    resume(edited_queries) which unblocks the worker with the updated queries.
     """
 
     # Signals
     progress = pyqtSignal(int, str)            # (percentage, description)
     log_msg = pyqtSignal(str, str)             # (message, level: INFO/WARNING/ERROR)
     scene_started = pyqtSignal(int, int, str)  # (num, total, text_preview)
+    script_ready = pyqtSignal(list)            # list of Scene objects — pause point
     finished = pyqtSignal(str)                 # path to the final video
     error = pyqtSignal(str)                    # error message
 
@@ -89,9 +177,25 @@ class PipelineWorker(QThread):
         super().__init__()
         self.config = config
         self._cancel = False
+        # Synchronisation primitives for the review pause
+        self._mutex = QMutex()
+        self._wait = QWaitCondition()
+        self._reviewed_queries: list[str] | None = None  # set by resume()
 
     def cancel(self):
         self._cancel = True
+        # Unblock the wait in case we're paused at the review step
+        self._wait.wakeAll()
+
+    def resume(self, edited_queries: list[str]) -> None:
+        """
+        Called from the main thread after the user confirms the review dialog.
+        Stores the edited queries and unblocks _run_pipeline.
+        """
+        self._mutex.lock()
+        self._reviewed_queries = edited_queries
+        self._wait.wakeAll()
+        self._mutex.unlock()
 
     def run(self):
         try:
@@ -131,10 +235,31 @@ class PipelineWorker(QThread):
             cfg["model"],
             cfg["max_scenes"],
             cfg.get("custom_instructions", ""),
+            cfg.get("context_size", 8192),
         )
         if self._cancel:
             return
         self.log_msg.emit(f"Script generated: {len(script.scenes)} scenes", "INFO")
+
+        # ── Step 2b: Pause for user review of video queries ──
+        # Emit the scene list to the main thread, then block until the user
+        # confirms (or cancels) the ScriptReviewDialog.
+        self.progress.emit(18, "Waiting for script review...")
+        self._mutex.lock()
+        self._reviewed_queries = None
+        self.script_ready.emit(script.scenes)   # triggers dialog in main thread
+        self._wait.wait(self._mutex)             # blocks here until resume() or cancel()
+        reviewed = self._reviewed_queries
+        self._mutex.unlock()
+
+        if self._cancel or reviewed is None:
+            return
+
+        # Apply the (possibly edited) queries back to the scenes
+        for scene, new_query in zip(script.scenes, reviewed):
+            q = new_query.strip()
+            if q:
+                scene.video_query = " ".join(q.split()[:5])
 
         # ── Steps 3–4: Process scenes ──
         audio_engine = AudioEngine(voice=cfg["voice"], speed=cfg["speed"])
@@ -175,7 +300,13 @@ class PipelineWorker(QThread):
                 f"Scene {num}/{total_scenes}: downloading video...",
             )
             raw_path = os.path.join(temp_dir, f"scene_{num:02d}_raw.mp4")
-            success = search_and_download_video(scene.video_query, pexels_key, raw_path)
+            success = search_and_download_video(
+                scene.video_query,
+                pexels_key,
+                raw_path,
+                orientation=cfg.get("orientation", "landscape"),
+                target_duration=duration,
+            )
             if not success:
                 self.log_msg.emit(
                     f"  Pexels failed for '{scene.video_query}', using black fallback",
@@ -276,10 +407,23 @@ class ConfigPanel(QWidget):
         self.spin_max_scenes.setValue(8)
         self.spin_max_scenes.setToolTip("Maximum number of scenes the LLM will generate")
 
+        self.spin_context_size = QSpinBox()
+        self.spin_context_size.setRange(2048, 131072)
+        self.spin_context_size.setSingleStep(2048)
+        self.spin_context_size.setValue(8192)
+        self.spin_context_size.setToolTip(
+            "Context window size (num_ctx) passed to Ollama.\n"
+            "Increase this if the PDF text is long.\n"
+            "Higher values require more VRAM/RAM.\n"
+            "Common values: 4096, 8192, 16384, 32768"
+        )
+
         lay_llm.addWidget(QLabel("Model:"), 0, 0)
         lay_llm.addWidget(self.combo_model, 0, 1)
         lay_llm.addWidget(QLabel("Max scenes:"), 1, 0)
         lay_llm.addWidget(self.spin_max_scenes, 1, 1)
+        lay_llm.addWidget(QLabel("Context window (tokens):"), 2, 0)
+        lay_llm.addWidget(self.spin_context_size, 2, 1)
         layout.addWidget(grp_llm)
 
         # ── 3. Voice (Kokoro) ──
@@ -502,6 +646,7 @@ class ConfigPanel(QWidget):
             "voice": self.combo_voice.currentText(),
             "speed": self.slider_speed.value() / 100.0,
             "max_scenes": self.spin_max_scenes.value(),
+            "context_size": self.spin_context_size.value(),
             "resolution": res_map[self.combo_res.currentText()],
             "fps": fps_map[self.combo_fps.currentText()],
             "preset": self.combo_preset.currentText(),
@@ -521,6 +666,9 @@ class ConfigPanel(QWidget):
 
         # Max scenes
         self.spin_max_scenes.setValue(int(cfg.get("max_scenes", 8)))
+
+        # Context window
+        self.spin_context_size.setValue(int(cfg.get("context_size", 8192)))
 
         # Voice
         idx = self.combo_voice.findText(cfg.get("voice", ""))
@@ -1140,9 +1288,35 @@ class MainWindow(QMainWindow):
         self._worker.progress.connect(self.panel_progress.update_progress)
         self._worker.log_msg.connect(self.panel_progress.append_log)
         self._worker.scene_started.connect(self.panel_progress.update_scene)
+        self._worker.script_ready.connect(self._show_review_dialog)
         self._worker.finished.connect(self._pipeline_finished)
         self._worker.error.connect(self._pipeline_error)
         self._worker.start()
+
+    def _show_review_dialog(self, scenes: list) -> None:
+        """
+        Slot called from the main thread when the worker emits script_ready.
+        Shows ScriptReviewDialog; on accept resumes the worker with the
+        (possibly edited) queries; on reject cancels the pipeline.
+        """
+        self.status.showMessage("Waiting for script review...")
+        self.panel_progress.append_log(
+            f"Script ready ({len(scenes)} scenes) — review and edit queries before download.",
+            "INFO",
+        )
+
+        dlg = ScriptReviewDialog(scenes, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            queries = dlg.get_queries()
+            self.panel_progress.append_log("Script approved — continuing pipeline.", "INFO")
+            self.status.showMessage("Pipeline running...")
+            self._worker.resume(queries)
+        else:
+            self.panel_progress.append_log("Pipeline cancelled by user at review step.", "WARNING")
+            self.status.showMessage("Pipeline cancelled.")
+            self._worker.cancel()
+            self.btn_start.setEnabled(True)
+            self.btn_cancel.setEnabled(False)
 
     def _apply_video_config(self, config: dict):
         """Applies video options (resolution, fps, preset) to the freevi module."""
