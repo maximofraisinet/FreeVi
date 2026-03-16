@@ -208,6 +208,7 @@ class PipelineWorker(QThread):
             concatenate_scenes,
             extract_pdf_text,
             generate_script,
+            get_language_label,
             search_and_download_video,
         )
         import tempfile, shutil, os
@@ -231,6 +232,7 @@ class PipelineWorker(QThread):
             cfg["max_scenes"],
             cfg.get("custom_instructions", ""),
             cfg.get("context_size", 8192),
+            narration_language=get_language_label(cfg.get("lang_code", "a")),
         )
         if self._cancel:
             return
@@ -257,7 +259,8 @@ class PipelineWorker(QThread):
                 scene.video_query = " ".join(q.split()[:5])
 
         # ── Steps 3–4: Process scenes ──
-        audio_engine = AudioEngine(voice=cfg["voice"], speed=cfg["speed"])
+        audio_engine = AudioEngine(voice=cfg["voice"], speed=cfg["speed"],
+                                    lang_code=cfg.get("lang_code", "a"))
         pexels_key = cfg["pexels_key"]
         temp_dir = tempfile.mkdtemp(prefix="freevi_")
         final_paths = []
@@ -360,7 +363,7 @@ class ConfigPanel(QWidget):
     def __init__(self, ollama_models: list[str], kokoro_voices: list[str]):
         super().__init__()
         self._models = ollama_models
-        self._voices = kokoro_voices
+        self._all_voices = kokoro_voices  # full flat list (used as fallback)
         self._build_ui()
 
     def _build_ui(self):
@@ -420,31 +423,36 @@ class ConfigPanel(QWidget):
         lay_llm.addWidget(self.spin_context_size, 2, 1)
         layout.addWidget(grp_llm)
 
-        # ── 3. Voice (Kokoro) ──
-        grp_voice = QGroupBox("Voice (Kokoro 1.0)")
+        # ── 3. Language & Voice (Kokoro) ──
+        grp_voice = QGroupBox("Language & Voice (Kokoro 1.0)")
         grp_voice.setObjectName("groupbox")
         lay_voice = QGridLayout(grp_voice)
         lay_voice.setSpacing(8)
 
-        self.combo_voice = QComboBox()
-        self.combo_voice.addItems(self._voices)
-        # Select im_nicola by default (Spanish)
-        idx_nicola = self.combo_voice.findText("im_nicola")
-        if idx_nicola >= 0:
-            self.combo_voice.setCurrentIndex(idx_nicola)
-        self.combo_voice.setToolTip(
-            "Voice prefixes:\n"
-            "  a = American English\n"
-            "  b = British English\n"
-            "  e = Spanish\n"
-            "  f = French\n"
-            "  h = Hindi\n"
-            "  i = Italian\n"
-            "  j = Japanese\n"
-            "  p = Portuguese\n"
-            "  z = Chinese\n"
-            "  f/m = female/male"
+        # Language selector — drives which voices are shown
+        self.combo_language = QComboBox()
+        from freevi import KOKORO_LANGUAGES
+        self._lang_data = KOKORO_LANGUAGES  # keep reference
+        for code, info in KOKORO_LANGUAGES.items():
+            self.combo_language.addItem(info["label"], userData=code)
+        self.combo_language.setToolTip(
+            "Select the narration language.\n"
+            "The LLM will be forced to write narrator text in this language.\n"
+            "The voice list will update to show only matching voices."
         )
+        # Default to Spanish (lang_code "e")
+        idx_es = self.combo_language.findData("e")
+        if idx_es >= 0:
+            self.combo_language.setCurrentIndex(idx_es)
+
+        # Voice selector — filtered by language
+        self.combo_voice = QComboBox()
+        self.combo_voice.setToolTip("Select a Kokoro voice for narration")
+
+        # Wire: when language changes, repopulate voices
+        self.combo_language.currentIndexChanged.connect(self._on_language_changed)
+        # Populate voices for the initial language selection
+        self._on_language_changed()
 
         self.slider_speed = QSlider(Qt.Orientation.Horizontal)
         self.slider_speed.setRange(50, 200)
@@ -457,11 +465,13 @@ class ConfigPanel(QWidget):
             lambda v: self.lbl_speed_val.setText(f"{v/100:.2f}×")
         )
 
-        lay_voice.addWidget(QLabel("Voice:"), 0, 0)
-        lay_voice.addWidget(self.combo_voice, 0, 1, 1, 2)
-        lay_voice.addWidget(QLabel("Speed:"), 1, 0)
-        lay_voice.addWidget(self.slider_speed, 1, 1)
-        lay_voice.addWidget(self.lbl_speed_val, 1, 2)
+        lay_voice.addWidget(QLabel("Language:"), 0, 0)
+        lay_voice.addWidget(self.combo_language, 0, 1, 1, 2)
+        lay_voice.addWidget(QLabel("Voice:"), 1, 0)
+        lay_voice.addWidget(self.combo_voice, 1, 1, 1, 2)
+        lay_voice.addWidget(QLabel("Speed:"), 2, 0)
+        lay_voice.addWidget(self.slider_speed, 2, 1)
+        lay_voice.addWidget(self.lbl_speed_val, 2, 2)
         layout.addWidget(grp_voice)
 
         # ── 4. Video ──
@@ -601,6 +611,23 @@ class ConfigPanel(QWidget):
         """Clears the prompt editor so the built-in default will be used."""
         self.txt_prompt.clear()
 
+    def _on_language_changed(self):
+        """Repopulates the voice combo when the user selects a different language."""
+        lang_code = self.combo_language.currentData()
+        if lang_code is None:
+            return
+        lang_info = self._lang_data.get(lang_code, {})
+        voices = lang_info.get("voices", [])
+
+        self.combo_voice.blockSignals(True)
+        self.combo_voice.clear()
+        if voices:
+            self.combo_voice.addItems(voices)
+        else:
+            # Fallback: show all voices (should not happen)
+            self.combo_voice.addItems(self._all_voices)
+        self.combo_voice.blockSignals(False)
+
     def _select_pdf(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Select PDF", "", "PDF files (*.pdf)"
@@ -637,6 +664,7 @@ class ConfigPanel(QWidget):
         return {
             "pdf_path": pdf,
             "model": self.combo_model.currentText(),
+            "lang_code": self.combo_language.currentData() or "a",
             "voice": self.combo_voice.currentText(),
             "speed": self.slider_speed.value() / 100.0,
             "max_scenes": self.spin_max_scenes.value(),
@@ -664,7 +692,17 @@ class ConfigPanel(QWidget):
         # Context window
         self.spin_context_size.setValue(int(cfg.get("context_size", 8192)))
 
-        # Voice
+        # Language — must be set BEFORE voice so _on_language_changed populates
+        # the correct voice list first
+        lang_code = cfg.get("lang_code", "e")
+        idx = self.combo_language.findData(lang_code)
+        if idx >= 0:
+            self.combo_language.setCurrentIndex(idx)
+        # _on_language_changed fires automatically via signal; but if the index
+        # was already at that position it won't fire, so call it explicitly
+        self._on_language_changed()
+
+        # Voice (now the combo is populated for the correct language)
         idx = self.combo_voice.findText(cfg.get("voice", ""))
         if idx >= 0:
             self.combo_voice.setCurrentIndex(idx)

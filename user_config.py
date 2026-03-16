@@ -41,6 +41,7 @@ DEFAULTS: dict = {
     "open_when_done":      True,
     # Empty string means "use the built-in DEFAULT_CUSTOM_INSTRUCTIONS from freevi.py"
     "custom_instructions": "",
+    "lang_code":           "a",
 }
 
 
@@ -133,6 +134,7 @@ def save(config: dict) -> None:
         "output":              config.get("output",              DEFAULTS["output"]),
         "open_when_done":      config.get("open_when_done",      DEFAULTS["open_when_done"]),
         "custom_instructions": config.get("custom_instructions", DEFAULTS["custom_instructions"]),
+        "lang_code":           config.get("lang_code",           DEFAULTS["lang_code"]),
     }
     _write(_config_path(), to_save)
 
@@ -166,5 +168,6 @@ def save_from_panel(panel) -> None:
         "output":              panel.edit_output.text(),
         "open_when_done":      panel.chk_open_when_done.isChecked(),
         "custom_instructions": panel.txt_prompt.toPlainText(),
+        "lang_code":           panel.combo_language.currentData(),
     }
     save(raw)

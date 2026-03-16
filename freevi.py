@@ -51,6 +51,99 @@ KOKORO_VOICES_PATH = KOKORO_MODEL_DIR / "voices-v1.0.bin"
 
 
 # ---------------------------------------------------------------------------
+# Kokoro 1.0 language and voice registry
+# ---------------------------------------------------------------------------
+# Each key is a Kokoro lang_code (single char), mapped to metadata and voices.
+# The espeak_code is passed to misaki EspeakG2P (or None for non-espeak G2P).
+# Voices are ordered: females first, then males, alphabetically.
+
+KOKORO_LANGUAGES: dict[str, dict] = {
+    "a": {
+        "label": "English (American)",
+        "espeak_code": "en-us",
+        "voices": [
+            "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica",
+            "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+            "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam",
+            "am_michael", "am_onyx", "am_puck", "am_santa",
+        ],
+    },
+    "b": {
+        "label": "English (British)",
+        "espeak_code": "en-gb",
+        "voices": [
+            "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+            "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+        ],
+    },
+    "e": {
+        "label": "Spanish",
+        "espeak_code": "es",
+        "voices": ["ef_dora", "em_alex", "em_santa"],
+    },
+    "f": {
+        "label": "French",
+        "espeak_code": "fr-fr",
+        "voices": ["ff_siwis"],
+    },
+    "h": {
+        "label": "Hindi",
+        "espeak_code": "hi",
+        "voices": ["hf_alpha", "hf_beta", "hm_omega", "hm_psi"],
+    },
+    "i": {
+        "label": "Italian",
+        "espeak_code": "it",
+        "voices": ["if_sara", "im_nicola"],
+    },
+    "j": {
+        "label": "Japanese",
+        "espeak_code": None,  # uses misaki[ja], not espeak
+        "voices": [
+            "jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro",
+            "jm_kumo",
+        ],
+    },
+    "p": {
+        "label": "Portuguese (Brazilian)",
+        "espeak_code": "pt-br",
+        "voices": ["pf_dora", "pm_alex", "pm_santa"],
+    },
+    "z": {
+        "label": "Chinese (Mandarin)",
+        "espeak_code": None,  # uses misaki[zh], not espeak
+        "voices": [
+            "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+            "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang",
+        ],
+    },
+}
+
+# Reverse lookup: voice_id → lang_code
+_VOICE_TO_LANG: dict[str, str] = {}
+for _lc, _info in KOKORO_LANGUAGES.items():
+    for _v in _info["voices"]:
+        _VOICE_TO_LANG[_v] = _lc
+
+
+def get_lang_code_for_voice(voice: str) -> str:
+    """Returns the Kokoro lang_code ('a', 'e', 'i', ...) for a given voice ID."""
+    return _VOICE_TO_LANG.get(voice, voice[0] if voice else "a")
+
+
+def get_voices_for_lang(lang_code: str) -> list[str]:
+    """Returns the list of voice IDs available for a given lang_code."""
+    info = KOKORO_LANGUAGES.get(lang_code)
+    return list(info["voices"]) if info else []
+
+
+def get_language_label(lang_code: str) -> str:
+    """Returns the human-readable label for a Kokoro lang_code."""
+    info = KOKORO_LANGUAGES.get(lang_code)
+    return info["label"] if info else lang_code
+
+
+# ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
 @dataclass
@@ -124,20 +217,26 @@ def extract_pdf_text(pdf_path: str) -> str:
 # It is injected between the role description and the strict JSON rules,
 # so even if the user clears it completely the pipeline keeps working.
 DEFAULT_CUSTOM_INSTRUCTIONS = """\
-- Narrate in Spanish, natural and conversational (40-80 words per scene).
+- Keep the narration natural and conversational (40-80 words per scene).
 - Avoid excessive technical jargon. Imagine speaking to a general audience.\
 """
 
 # Fixed parts that must always be present for the pipeline to work.
-# {max_scenes} is replaced at runtime; {{ / }} are literal braces in the JSON example.
+# {max_scenes} and {narration_language} are replaced at runtime.
+# {{ / }} are literal braces in the JSON example.
 _SYSTEM_PROMPT_HEAD = """\
 You are an expert scriptwriter for educational and informational videos.
 Your task is to convert an academic/informational text into a narrated video script.
 
+MANDATORY LANGUAGE RULE (NON-NEGOTIABLE):
+- ALL narrator_text MUST be written in **{narration_language}**.
+- This is an absolute requirement. Do NOT write narrator_text in any other language.
+- Even if the source text is in a different language, translate and narrate in {narration_language}.
+
 STRICT RULES:
 - Generate between 4 and {max_scenes} scenes (adjust based on text length).
 - Each scene must be self-contained and flow naturally into the next.
-- "narrator_text": The narration text for this scene.
+- "narrator_text": The narration text for this scene (MUST be in {narration_language}).
 - "video_query": 2 to 5 words in ENGLISH to search for a stock video clip.
   CRITICAL: The query MUST visually represent the specific subject of THAT scene's
   narrator_text, not the document topic in general.
@@ -159,7 +258,7 @@ RESPOND ONLY with valid JSON in this exact structure:
 {{
   "scenes": [
     {{
-      "narrator_text": "narration text...",
+      "narrator_text": "narration text in {narration_language}...",
       "video_query": "english query"
     }}
   ]
@@ -170,7 +269,11 @@ RESPOND ONLY with valid JSON in this exact structure:
 SYSTEM_PROMPT_TPL = _SYSTEM_PROMPT_HEAD + "\n{custom_instructions}\n" + _SYSTEM_PROMPT_TAIL
 
 
-def build_system_prompt(max_scenes: int, custom_instructions: str = "") -> str:
+def build_system_prompt(
+    max_scenes: int,
+    custom_instructions: str = "",
+    narration_language: str = "Spanish",
+) -> str:
     """
     Assembles the final system prompt from the fixed parts and the
     user-supplied custom instructions.
@@ -179,19 +282,28 @@ def build_system_prompt(max_scenes: int, custom_instructions: str = "") -> str:
     the mandatory JSON format block, so:
       - An empty string is perfectly valid (the pipeline still works).
       - The user cannot accidentally remove the JSON format requirement.
-      - The user can change language, tone, length, etc. freely.
+      - The user can change tone, length, etc. freely.
+      - The narration language is enforced in the fixed parts and cannot be
+        overridden by the user's custom instructions.
 
     Args:
         max_scenes: Maximum number of scenes to request from the LLM.
         custom_instructions: Free-form text from the GUI prompt editor.
                              Defaults to DEFAULT_CUSTOM_INSTRUCTIONS.
+        narration_language: The language name in English (e.g. "Spanish",
+                           "English (American)") injected into the prompt
+                           so the LLM is forced to narrate in it.
 
     Returns:
         The complete system prompt string ready to send to Ollama.
     """
     instructions = custom_instructions.strip() or DEFAULT_CUSTOM_INSTRUCTIONS
-    head = _SYSTEM_PROMPT_HEAD.format(max_scenes=max_scenes)
-    return f"{head}\n\n{instructions}\n{_SYSTEM_PROMPT_TAIL}"
+    head = _SYSTEM_PROMPT_HEAD.format(
+        max_scenes=max_scenes,
+        narration_language=narration_language,
+    )
+    tail = _SYSTEM_PROMPT_TAIL.format(narration_language=narration_language)
+    return f"{head}\n\n{instructions}\n{tail}"
 
 
 def _clean_json(text: str) -> str:
@@ -235,6 +347,7 @@ def generate_script(
     max_scenes: int = 8,
     custom_instructions: str = "",
     context_size: int = 8192,
+    narration_language: str = "Spanish",
 ) -> Script:
     """
     Sends the PDF text to a local LLM via Ollama to generate the video script.
@@ -243,24 +356,28 @@ def generate_script(
 
     Token budget strategy
     ---------------------
-    Each scene in the JSON response costs roughly 120-150 tokens (narrator text
-    ~80 tokens + video_query + JSON overhead).  We reserve
-    ``num_predict = max_scenes * 160 + 256`` tokens for the output, then give
+    Each scene in the JSON response costs roughly 200-300 tokens (narrator text
+    ~150-200 tokens + video_query + JSON overhead).  We reserve
+    ``num_predict = max_scenes * 300 + 256`` tokens for the output, then give
     the remaining ``context_size - num_predict`` tokens to the input (system
     prompt + PDF text).  The PDF text is truncated so the total fits.
 
     If the response is still truncated (invalid JSON), the function retries
-    once with ``max_scenes`` halved, which frees more room for the output.
+    up to twice: first with ``max_scenes`` halved, then with ``max_scenes=2``
+    as a last resort.
 
     Args:
         pdf_text: Text extracted from the PDF.
         model: Name of the Ollama model to use.
         max_scenes: Maximum number of scenes to generate.
         custom_instructions: Optional free-form instructions injected into the
-            system prompt (language, tone, length, etc.). If empty, the
+            system prompt (tone, length, etc.). If empty, the
             DEFAULT_CUSTOM_INSTRUCTIONS are used as fallback.
         context_size: Ollama num_ctx option — the model's context window in
             tokens. Increase this if the PDF text is long. Default: 8192.
+        narration_language: Human-readable language name (e.g. "Spanish",
+            "English (American)") forced into the system prompt so the LLM
+            writes all narrator_text in that language.
 
     Returns:
         Script with the list of scenes.
@@ -270,7 +387,8 @@ def generate_script(
         ValueError: If the response does not have the expected format.
     """
     return _generate_script_attempt(
-        pdf_text, model, max_scenes, custom_instructions, context_size, attempt=1
+        pdf_text, model, max_scenes, custom_instructions, context_size,
+        narration_language, attempt=1,
     )
 
 
@@ -280,6 +398,7 @@ def _generate_script_attempt(
     max_scenes: int,
     custom_instructions: str,
     context_size: int,
+    narration_language: str,
     attempt: int,
 ) -> Script:
     """
@@ -287,8 +406,26 @@ def _generate_script_attempt(
     with a smaller max_scenes if the JSON response is truncated.
     """
     # ── Token budget ──────────────────────────────────────────────────────────
-    # Reserve output tokens: ~160 tokens per scene + 256 for JSON scaffolding.
-    num_predict = max_scenes * 160 + 256
+    # Reserve output tokens: ~300 tokens per scene + 256 for JSON scaffolding.
+    # 300 tokens/scene is conservative enough to handle verbose models (e.g.
+    # gemma3) whose narrator_text easily exceeds 200 tokens per scene.
+    num_predict = max_scenes * 300 + 256
+
+    # Thinking models (e.g. lfm2.5-thinking, qwq, deepseek-r1) spend a large
+    # portion of num_predict on an internal <think>…</think> chain before
+    # writing the actual JSON.  We add a fixed overhead so there are enough
+    # tokens left for the real output after thinking finishes.
+    _THINKING_KEYWORDS = ("thinking", "think", "qwq", "r1", "reasoner")
+    _is_thinking_model = any(kw in model.lower() for kw in _THINKING_KEYWORDS)
+    if _is_thinking_model:
+        _THINKING_OVERHEAD = 2048  # tokens consumed by internal reasoning
+        num_predict += _THINKING_OVERHEAD
+        log.info(
+            f"  Thinking model detected ('{model}'). "
+            f"Adding {_THINKING_OVERHEAD} token overhead for reasoning "
+            f"(total num_predict={num_predict})."
+        )
+
     # Tokens available for input (system prompt + user text).
     # System prompt + wrappers ≈ 400 tokens; give the rest to the PDF text.
     input_token_budget = context_size - num_predict - 400
@@ -299,7 +436,9 @@ def _generate_script_attempt(
         pdf_text = pdf_text[:max_chars] + "\n\n[... text truncated due to length ...]"
         log.warning(f"  Text truncated to {max_chars} characters for the model.")
 
-    system_prompt = build_system_prompt(max_scenes, custom_instructions)
+    system_prompt = build_system_prompt(
+        max_scenes, custom_instructions, narration_language,
+    )
     user_prompt = (
         f"Convert the following text into a narrated video script:\n\n"
         f"---START OF TEXT---\n{pdf_text}\n---END OF TEXT---"
@@ -330,6 +469,23 @@ def _generate_script_attempt(
 
     # Parse JSON response
     content = response["message"]["content"]
+
+    # Thinking models (e.g. lfm2.5-thinking) may produce an empty content field
+    # if the reasoning chain consumed all num_predict tokens.  As a last resort,
+    # scan the thinking text for a JSON block — the model sometimes embeds the
+    # final answer there before running out of space.
+    if not content.strip():
+        thinking = response["message"].get("thinking", "") or ""
+        if thinking:
+            log.warning(
+                "  content is empty; scanning thinking field for embedded JSON..."
+            )
+            # Extract the last {...} block from the thinking text.
+            _json_blocks = re.findall(r'\{[\s\S]*\}', thinking)
+            if _json_blocks:
+                content = _json_blocks[-1]
+                log.info(f"  Found JSON in thinking field ({len(content)} characters).")
+
     log.info(f"  LLM response received ({len(content)} characters)")
 
     # Check for Ollama stop reason — if the model stopped due to length the
@@ -338,14 +494,15 @@ def _generate_script_attempt(
         response.get("done_reason", "")
         or response.get("stop_reason", "")
     )
-    if stop_reason == "length" and attempt == 1:
-        reduced = max(2, max_scenes // 2)
+    if stop_reason == "length" and attempt < 3:
+        reduced = max(2, max_scenes // 2) if attempt == 1 else 2
         log.warning(
             f"  Response cut off by token limit (done_reason=length). "
-            f"Retrying with max_scenes={reduced}..."
+            f"Retrying with max_scenes={reduced} (attempt {attempt + 1}/3)..."
         )
         return _generate_script_attempt(
-            pdf_text, model, reduced, custom_instructions, context_size, attempt=2
+            pdf_text, model, reduced, custom_instructions, context_size,
+            narration_language, attempt=attempt + 1,
         )
 
     cleaned = _clean_json(content)
@@ -365,15 +522,15 @@ def _generate_script_attempt(
         except json.JSONDecodeError:
             # If this is the first attempt, the truncation may not have been
             # caught by done_reason — retry with fewer scenes before giving up.
-            if attempt == 1:
-                reduced = max(2, max_scenes // 2)
+            if attempt < 3:
+                reduced = max(2, max_scenes // 2) if attempt == 1 else 2
                 log.warning(
                     f"  JSON invalid (likely truncated). "
-                    f"Retrying with max_scenes={reduced}..."
+                    f"Retrying with max_scenes={reduced} (attempt {attempt + 1}/3)..."
                 )
                 return _generate_script_attempt(
                     pdf_text, model, reduced, custom_instructions,
-                    context_size, attempt=2,
+                    context_size, narration_language, attempt=attempt + 1,
                 )
             raise ValueError(
                 f"The LLM did not return valid JSON even after attempting to clean "
@@ -448,25 +605,35 @@ class AudioEngine:
     """
     Generates TTS audio using Kokoro 1.0 with ONNX Runtime.
 
-    Uses misaki EspeakG2P to convert Spanish text to phonemes,
-    then Kokoro generates the audio.
+    Supports all Kokoro languages.  For espeak-backed languages (American
+    English, British English, Spanish, French, Hindi, Italian, Portuguese)
+    it uses ``misaki.espeak.EspeakG2P`` for phonemization.  For Japanese
+    and Mandarin Chinese it falls back to Kokoro's built-in G2P.
     """
 
-    def __init__(self, voice: str = "im_nicola", speed: float = 1.0):
+    def __init__(
+        self,
+        voice: str = "af_heart",
+        speed: float = 1.0,
+        lang_code: str = "",
+    ):
         """
         Initializes the audio engine.
 
         Args:
-            voice: Kokoro voice name (im_nicola for Spanish).
+            voice: Kokoro voice ID (e.g. ``af_heart``, ``em_alex``).
             speed: Speech speed (1.0 = normal).
+            lang_code: Kokoro single-char language code (``a``, ``e``, …).
+                       If empty, inferred from the voice prefix.
         """
         self.voice = voice
         self.speed = speed
+        self.lang_code = lang_code or get_lang_code_for_voice(voice)
         self.kokoro = None
         self.g2p = None
 
     def _initialize(self):
-        """Loads the Kokoro model and G2P module (lazy loading)."""
+        """Loads the Kokoro model and the appropriate G2P module (lazy)."""
         if self.kokoro is not None:
             return
 
@@ -485,25 +652,34 @@ class AudioEngine:
         log.info("  Loading Kokoro v1.0 model (this may take a few seconds)...")
         self.kokoro = Kokoro(str(KOKORO_ONNX_PATH), str(KOKORO_VOICES_PATH))
 
-        # Initialize G2P for Spanish with misaki + espeak-ng
-        try:
-            from misaki.espeak import EspeakG2P
+        # Initialize G2P based on language
+        lang_info = KOKORO_LANGUAGES.get(self.lang_code, {})
+        espeak_code = lang_info.get("espeak_code")
+        lang_label = lang_info.get("label", self.lang_code)
 
-            self.g2p = EspeakG2P(language="es")
-            log.info("  Spanish G2P initialized (misaki + espeak-ng)")
-        except ImportError:
-            log.warning(
-                "  misaki not available. Using direct mode (no phonemization).\n"
-                "  For better Spanish quality: pip install misaki"
-            )
+        if espeak_code is not None:
+            # espeak-backed language — use misaki EspeakG2P
+            try:
+                from misaki.espeak import EspeakG2P
+                self.g2p = EspeakG2P(language=espeak_code)
+                log.info(f"  G2P initialized for {lang_label} (espeak: {espeak_code})")
+            except ImportError:
+                log.warning(
+                    f"  misaki not available. Using direct mode for {lang_label}.\n"
+                    f"  For better quality: pip install misaki"
+                )
+                self.g2p = None
+        else:
+            # Japanese / Chinese — Kokoro handles G2P internally
+            log.info(f"  {lang_label}: using Kokoro built-in G2P (no espeak needed)")
             self.g2p = None
 
     def generate_audio(self, text: str, output_path: str) -> float:
         """
-        Generates a .wav file from Spanish text.
+        Generates a .wav file from text in the configured language.
 
         Args:
-            text: Spanish text to synthesize.
+            text: Text to synthesize (in the voice's language).
             output_path: Path where the .wav file will be saved.
 
         Returns:
@@ -513,7 +689,7 @@ class AudioEngine:
 
         try:
             if self.g2p is not None:
-                # Convert text to phonemes for better Spanish quality
+                # Convert text to phonemes via misaki espeak
                 # misaki 0.7+ EspeakG2P returns str directly
                 phonemes = self.g2p(text)
                 if not phonemes:
@@ -526,12 +702,14 @@ class AudioEngine:
                     is_phonemes=True,
                 )
             else:
-                # Direct mode (no phonemization, reduced quality for Spanish)
+                # Direct mode: Japanese, Chinese, or fallback when misaki
+                # is not installed. Pass lang_code so Kokoro picks the
+                # correct internal G2P.
                 samples, sample_rate = self.kokoro.create(
                     text,
                     voice=self.voice,
                     speed=self.speed,
-                    lang="es",
+                    lang=self.lang_code,
                 )
 
             # Save audio
@@ -1037,18 +1215,22 @@ class VideoGenerator:
         self,
         pdf_path: str,
         llm_model: str = "qwen3",
-        voice: str = "im_nicola",
+        voice: str = "af_heart",
         voice_speed: float = 1.0,
         output_path: str = "output/video_final.mp4",
         max_scenes: int = 8,
         context_size: int = 8192,
+        lang_code: str = "a",
     ):
         self.pdf_path = pdf_path
         self.llm_model = llm_model
         self.output_path = output_path
         self.max_scenes = max_scenes
         self.context_size = context_size
-        self.audio_engine = AudioEngine(voice=voice, speed=voice_speed)
+        self.lang_code = lang_code
+        self.audio_engine = AudioEngine(
+            voice=voice, speed=voice_speed, lang_code=lang_code,
+        )
         self.pexels_api_key = get_pexels_api_key()
         self.temp_dir = tempfile.mkdtemp(prefix="freevi_")
         log.info(f"Temporary directory: {self.temp_dir}")
@@ -1065,11 +1247,13 @@ class VideoGenerator:
         log.info("=" * 60)
         log.info(f"STEP 2/5: Generating script with {self.llm_model}...")
         log.info("=" * 60)
+        narration_lang = get_language_label(self.lang_code)
         script = generate_script(
             pdf_text,
             self.llm_model,
             max_scenes=self.max_scenes,
             context_size=self.context_size,
+            narration_language=narration_lang,
         )
 
         # Show script summary
@@ -1184,7 +1368,14 @@ def main():
         epilog="""
 Examples:
   python freevi.py document.pdf
-  python freevi.py book.pdf --model qwen3 --voice im_nicola --output result.mp4
+  python freevi.py book.pdf --model qwen3 --voice af_heart --lang a --output result.mp4
+
+Available languages (--lang):
+  a = English (American)    b = English (British)
+  e = Spanish               f = French
+  h = Hindi                 i = Italian
+  j = Japanese              p = Portuguese (Brazilian)
+  z = Chinese (Mandarin)
 
 Prerequisites:
   1. Ollama running: ollama serve
@@ -1205,8 +1396,17 @@ Prerequisites:
     )
     parser.add_argument(
         "--voice",
-        default="im_nicola",
-        help="Kokoro voice for Spanish narration (default: im_nicola)",
+        default="af_heart",
+        help="Kokoro voice ID (default: af_heart). Must match --lang.",
+    )
+    parser.add_argument(
+        "--lang",
+        default="a",
+        choices=list(KOKORO_LANGUAGES.keys()),
+        help="Narration language code (default: a = English American). "
+             "Choices: " + ", ".join(
+                 f"{k}={v['label']}" for k, v in KOKORO_LANGUAGES.items()
+             ),
     )
     parser.add_argument(
         "--speed",
@@ -1239,6 +1439,7 @@ Prerequisites:
     log.info("=" * 60)
     log.info(f"  PDF:          {args.pdf}")
     log.info(f"  Model:        {args.model}")
+    log.info(f"  Language:     {args.lang} ({get_language_label(args.lang)})")
     log.info(f"  Voice:        {args.voice}")
     log.info(f"  Speed:        {args.speed}")
     log.info(f"  Max scenes:   {args.max_scenes}")
@@ -1255,6 +1456,7 @@ Prerequisites:
             output_path=args.output,
             max_scenes=args.max_scenes,
             context_size=args.context_size,
+            lang_code=args.lang,
         )
         final_path = generator.run()
         log.info(f"\nVideo generated successfully: {final_path}")
