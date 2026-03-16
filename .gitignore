@@ -1,0 +1,33 @@
+# ── Salidas generadas ──────────────────────────────────────────────────────
+output/
+*.mp4
+*.mkv
+*.avi
+
+# ── Modelos Kokoro (carpeta versionada, contenido no) ─────────────────────
+# Descarga kokoro-v1.0.onnx y voices-v1.0.bin desde:
+# https://github.com/thewh1teagle/kokoro-onnx/releases
+kokoro-v1.0/*.onnx
+kokoro-v1.0/*.bin
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Entornos virtuales ────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── Temporales del pipeline ───────────────────────────────────────────────
+/tmp/freevi_*/
+*.wav
+*.tmp
+
+# ── Credenciales y configuración local ───────────────────────────────────
+.env
+*.env

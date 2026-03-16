@@ -1,0 +1,34 @@
+# FreeVi - Dependencias
+# =====================
+# Instalar con: pip install -r requirements.txt
+# Requiere Python >= 3.10
+
+# Lectura de PDF
+PyMuPDF>=1.24.0
+
+# LLM local via Ollama
+ollama>=0.4.0
+
+# TTS - Kokoro 1.0 con ONNX Runtime
+kokoro-onnx>=0.4.4
+soundfile>=0.12.0
+
+# G2P para español (fonemización con espeak-ng)
+# misaki 0.7.x soporta Python 3.13, incluye espeak para español
+misaki>=0.7.0
+
+# Descarga de videos de stock
+requests>=2.31.0
+
+# Edición y ensamblaje de video (MoviePy 2.x)
+moviepy>=2.0.0
+
+# Dependencias del SISTEMA (no se instalan con pip):
+# - ffmpeg: requerido por moviepy para codificar video
+#     Ubuntu/Debian: sudo apt install ffmpeg
+#     macOS:         brew install ffmpeg
+#     Arch:          sudo pacman -S ffmpeg
+# - espeak-ng: requerido por misaki para fonemización en español
+#     Ubuntu/Debian: sudo apt install espeak-ng
+#     macOS:         brew install espeak-ng
+#     Arch:          sudo pacman -S espeak-ng
