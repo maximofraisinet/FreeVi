@@ -31,16 +31,21 @@ def _config_path() -> Path:
 #   pexels_key  → loaded from .env / environment variable (security).
 #   pdf_path    → changes every run; no value in remembering it.
 DEFAULTS: dict = {
-    "model":          "qwen3",
-    "max_scenes":     8,
-    "voice":          "im_nicola",
-    "speed":          100,          # slider int (50–200); divide by 100 → actual speed
-    "resolution":     "1920×1080 (Full HD)",
-    "fps":            "24 fps",
-    "preset":         "medium",
-    "orientation":    "landscape",
-    "output":         "output/video_final.mp4",
-    "open_when_done": True,
+    "model":               "qwen3",
+    "max_scenes":          8,
+    "voice":               "im_nicola",
+    "speed":               100,          # slider int (50–200); divide by 100 → actual speed
+    "resolution":          "1920×1080 (Full HD)",
+    "fps":                 "24 fps",
+    "preset":              "medium",
+    "orientation":         "landscape",
+    "output":              "output/video_final.mp4",
+    "open_when_done":      True,
+    # Empty string means "use the built-in DEFAULT_CUSTOM_INSTRUCTIONS from freevi.py"
+    "custom_instructions": "",
+    # NOTE: pexels_key and pdf_path are intentionally NOT persisted here.
+    #   pexels_key  → loaded from .env / environment variable (security).
+    #   pdf_path    → changes every run; no value in remembering it.
 }
 
 
@@ -120,17 +125,18 @@ def save(config: dict) -> None:
                 (keys pdf_path and pexels_key are silently ignored).
     """
     to_save = {
-        "model":          config.get("model",          DEFAULTS["model"]),
-        "max_scenes":     config.get("max_scenes",     DEFAULTS["max_scenes"]),
-        "voice":          config.get("voice",          DEFAULTS["voice"]),
+        "model":               config.get("model",               DEFAULTS["model"]),
+        "max_scenes":          config.get("max_scenes",          DEFAULTS["max_scenes"]),
+        "voice":               config.get("voice",               DEFAULTS["voice"]),
         # Convert float speed → slider int so load_from_config() can apply it directly
-        "speed":          int(config.get("speed", 1.0) * 100),
-        "resolution":     _resolution_label(config.get("resolution", (1920, 1080))),
-        "fps":            _fps_label(config.get("fps", 24)),
-        "preset":         config.get("preset",         DEFAULTS["preset"]),
-        "orientation":    config.get("orientation",    DEFAULTS["orientation"]),
-        "output":         config.get("output",         DEFAULTS["output"]),
-        "open_when_done": config.get("open_when_done", DEFAULTS["open_when_done"]),
+        "speed":               int(config.get("speed", 1.0) * 100),
+        "resolution":          _resolution_label(config.get("resolution", (1920, 1080))),
+        "fps":                 _fps_label(config.get("fps", 24)),
+        "preset":              config.get("preset",              DEFAULTS["preset"]),
+        "orientation":         config.get("orientation",         DEFAULTS["orientation"]),
+        "output":              config.get("output",              DEFAULTS["output"]),
+        "open_when_done":      config.get("open_when_done",      DEFAULTS["open_when_done"]),
+        "custom_instructions": config.get("custom_instructions", DEFAULTS["custom_instructions"]),
     }
     _write(_config_path(), to_save)
 
@@ -152,15 +158,16 @@ def save_from_panel(panel) -> None:
     fps_map = {"24 fps": 24, "30 fps": 30, "60 fps": 60}
 
     raw = {
-        "model":          panel.combo_model.currentText(),
-        "max_scenes":     panel.spin_max_scenes.value(),
-        "voice":          panel.combo_voice.currentText(),
-        "speed":          panel.slider_speed.value() / 100.0,
-        "resolution":     res_map.get(panel.combo_res.currentText(), (1920, 1080)),
-        "fps":            fps_map.get(panel.combo_fps.currentText(), 24),
-        "preset":         panel.combo_preset.currentText(),
-        "orientation":    panel.combo_orientation.currentText(),
-        "output":         panel.edit_output.text(),
-        "open_when_done": panel.chk_open_when_done.isChecked(),
+        "model":               panel.combo_model.currentText(),
+        "max_scenes":          panel.spin_max_scenes.value(),
+        "voice":               panel.combo_voice.currentText(),
+        "speed":               panel.slider_speed.value() / 100.0,
+        "resolution":          res_map.get(panel.combo_res.currentText(), (1920, 1080)),
+        "fps":                 fps_map.get(panel.combo_fps.currentText(), 24),
+        "preset":              panel.combo_preset.currentText(),
+        "orientation":         panel.combo_orientation.currentText(),
+        "output":              panel.edit_output.text(),
+        "open_when_done":      panel.chk_open_when_done.isChecked(),
+        "custom_instructions": panel.txt_prompt.toPlainText(),
     }
     save(raw)

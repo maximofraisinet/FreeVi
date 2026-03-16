@@ -120,27 +120,69 @@ def extract_pdf_text(pdf_path: str) -> str:
 # ---------------------------------------------------------------------------
 # 2. SCRIPT GENERATION MODULE (Ollama - Local LLM)
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT_TPL = """You are an expert scriptwriter for educational and informational videos.
+
+# The part the user can freely customise in the GUI.
+# It is injected between the role description and the strict JSON rules,
+# so even if the user clears it completely the pipeline keeps working.
+DEFAULT_CUSTOM_INSTRUCTIONS = """\
+- Narrate in Spanish, natural and conversational (40-80 words per scene).
+- Avoid excessive technical jargon. Imagine speaking to a general audience.\
+"""
+
+# Fixed parts that must always be present for the pipeline to work.
+# {max_scenes} is replaced at runtime; {{ / }} are literal braces in the JSON example.
+_SYSTEM_PROMPT_HEAD = """\
+You are an expert scriptwriter for educational and informational videos.
 Your task is to convert an academic/informational text into a narrated video script.
 
 STRICT RULES:
 - Generate between 4 and {max_scenes} scenes (adjust based on text length).
 - Each scene must be self-contained and flow naturally into the next.
-- "narrator_text": A paragraph in Spanish, natural and conversational (40-80 words).
-  Avoid excessive technical jargon. Imagine speaking to a general audience.
+- "narrator_text": The narration text for this scene.
 - "video_query": Exactly 1 to 3 words in ENGLISH to search for stock video.
   Must be visually descriptive and concrete (e.g. "ocean waves", "city traffic",
-  "laboratory research"). Avoid abstract terms.
+  "laboratory research"). Avoid abstract terms.\
+"""
+
+_SYSTEM_PROMPT_TAIL = """\
 
 RESPOND ONLY with valid JSON in this exact structure:
 {{
   "scenes": [
     {{
-      "narrator_text": "text in Spanish...",
+      "narrator_text": "narration text...",
       "video_query": "english query"
     }}
   ]
-}}"""
+}}\
+"""
+
+# Legacy alias kept so any code that imports SYSTEM_PROMPT_TPL still works.
+SYSTEM_PROMPT_TPL = _SYSTEM_PROMPT_HEAD + "\n{custom_instructions}\n" + _SYSTEM_PROMPT_TAIL
+
+
+def build_system_prompt(max_scenes: int, custom_instructions: str = "") -> str:
+    """
+    Assembles the final system prompt from the fixed parts and the
+    user-supplied custom instructions.
+
+    The custom instructions are sandwiched between the role/rules header and
+    the mandatory JSON format block, so:
+      - An empty string is perfectly valid (the pipeline still works).
+      - The user cannot accidentally remove the JSON format requirement.
+      - The user can change language, tone, length, etc. freely.
+
+    Args:
+        max_scenes: Maximum number of scenes to request from the LLM.
+        custom_instructions: Free-form text from the GUI prompt editor.
+                             Defaults to DEFAULT_CUSTOM_INSTRUCTIONS.
+
+    Returns:
+        The complete system prompt string ready to send to Ollama.
+    """
+    instructions = custom_instructions.strip() or DEFAULT_CUSTOM_INSTRUCTIONS
+    head = _SYSTEM_PROMPT_HEAD.format(max_scenes=max_scenes)
+    return f"{head}\n\n{instructions}\n{_SYSTEM_PROMPT_TAIL}"
 
 
 def _clean_json(text: str) -> str:
@@ -178,7 +220,12 @@ def _clean_json(text: str) -> str:
     return text[start:]
 
 
-def generate_script(pdf_text: str, model: str = "qwen3", max_scenes: int = 8) -> Script:
+def generate_script(
+    pdf_text: str,
+    model: str = "qwen3",
+    max_scenes: int = 8,
+    custom_instructions: str = "",
+) -> Script:
     """
     Sends the PDF text to a local LLM via Ollama to generate the video script.
 
@@ -188,6 +235,9 @@ def generate_script(pdf_text: str, model: str = "qwen3", max_scenes: int = 8) ->
         pdf_text: Text extracted from the PDF.
         model: Name of the Ollama model to use.
         max_scenes: Maximum number of scenes to generate.
+        custom_instructions: Optional free-form instructions injected into the
+            system prompt (language, tone, length, etc.). If empty, the
+            DEFAULT_CUSTOM_INSTRUCTIONS are used as fallback.
 
     Returns:
         Script with the list of scenes.
@@ -202,7 +252,7 @@ def generate_script(pdf_text: str, model: str = "qwen3", max_scenes: int = 8) ->
         pdf_text = pdf_text[:max_chars] + "\n\n[... text truncated due to length ...]"
         log.warning(f"  Text truncated to {max_chars} characters for the model.")
 
-    system_prompt = SYSTEM_PROMPT_TPL.format(max_scenes=max_scenes)
+    system_prompt = build_system_prompt(max_scenes, custom_instructions)
     user_prompt = (
         f"Convert the following text into a narrated video script:\n\n"
         f"---START OF TEXT---\n{pdf_text}\n---END OF TEXT---"

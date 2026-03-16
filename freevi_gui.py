@@ -126,7 +126,12 @@ class PipelineWorker(QThread):
         # ── Step 2: Generate script ──
         self.progress.emit(15, f"Generating script with {cfg['model']}...")
         self.log_msg.emit(f"Generating script with model '{cfg['model']}'...", "INFO")
-        script = generate_script(text, cfg["model"], cfg["max_scenes"])
+        script = generate_script(
+            text,
+            cfg["model"],
+            cfg["max_scenes"],
+            cfg.get("custom_instructions", ""),
+        )
         if self._cancel:
             return
         self.log_msg.emit(f"Script generated: {len(script.scenes)} scenes", "INFO")
@@ -415,7 +420,48 @@ class ConfigPanel(QWidget):
         lay_output.addWidget(self.chk_open_when_done, 1, 0, 1, 3)
         layout.addWidget(grp_output)
 
+        # ── 7. Prompt customization ──
+        grp_prompt = QGroupBox("Narrator Instructions (AI Prompt)")
+        grp_prompt.setObjectName("groupbox")
+        lay_prompt = QVBoxLayout(grp_prompt)
+        lay_prompt.setSpacing(6)
+
+        lbl_prompt_info = QLabel(
+            "These instructions tell the AI how to write the narration "
+            "(language, tone, length, etc.).\n"
+            "The JSON output format is enforced automatically — you cannot break it."
+        )
+        lbl_prompt_info.setWordWrap(True)
+        lbl_prompt_info.setStyleSheet("color: #565f89; font-size: 11px;")
+
+        self.txt_prompt = QTextEdit()
+        self.txt_prompt.setPlaceholderText(
+            "Leave empty to use the built-in default.\n\n"
+            "Example:\n"
+            "- Narrate in English, formal tone (50-70 words per scene).\n"
+            "- Focus on practical applications.\n"
+            "- Keep technical terms but explain them briefly."
+        )
+        self.txt_prompt.setMinimumHeight(110)
+        self.txt_prompt.setMaximumHeight(200)
+        self.txt_prompt.setFont(QFont("Monospace", 9))
+
+        btn_reset_prompt = QPushButton("Reset to default")
+        btn_reset_prompt.setObjectName("btn_secondary")
+        btn_reset_prompt.setFixedWidth(130)
+        btn_reset_prompt.setToolTip("Restore the built-in narrator instructions")
+        btn_reset_prompt.clicked.connect(self._reset_prompt)
+
+        lay_prompt.addWidget(lbl_prompt_info)
+        lay_prompt.addWidget(self.txt_prompt)
+        lay_prompt.addWidget(btn_reset_prompt, alignment=Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(grp_prompt)
+
         layout.addStretch()
+
+    def _reset_prompt(self):
+        """Clears the prompt editor so the built-in default will be used."""
+        self.txt_prompt.clear()
 
     def _select_pdf(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -463,6 +509,7 @@ class ConfigPanel(QWidget):
             "pexels_key": pexels_key,
             "output": self.edit_output.text(),
             "open_when_done": self.chk_open_when_done.isChecked(),
+            "custom_instructions": self.txt_prompt.toPlainText(),
         }
 
     def load_from_config(self, cfg: dict) -> None:
@@ -509,6 +556,9 @@ class ConfigPanel(QWidget):
 
         # Open when done
         self.chk_open_when_done.setChecked(bool(cfg.get("open_when_done", True)))
+
+        # Custom prompt instructions
+        self.txt_prompt.setPlainText(cfg.get("custom_instructions", ""))
 
     def validation_errors(self) -> list[str]:
         """Returns a list of validation errors."""
