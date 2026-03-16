@@ -1,22 +1,3 @@
-"""
-FreeVi - Automatic video generator from PDF
-============================================
-100% local and free pipeline (except stock video downloads from Pexels).
-
-Per-scene architecture (strict order for synchronization):
-  1. Local LLM (Ollama) generates narrator text + visual query
-  2. Kokoro 1.0 (ONNX) generates audio .wav → exact duration is measured
-  3. Pexels API downloads stock video → trimmed/looped to that duration
-  4. MoviePy assembles audio + video per scene → concatenates everything
-
-Dependencies:
-  pip install -r requirements.txt
-
-Usage:
-  python freevi.py document.pdf
-  python freevi.py document.pdf --model qwen3 --voice im_nicola --output my_video.mp4
-"""
-
 import argparse
 import json
 import logging

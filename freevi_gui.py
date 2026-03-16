@@ -465,6 +465,51 @@ class ConfigPanel(QWidget):
             "open_when_done": self.chk_open_when_done.isChecked(),
         }
 
+    def load_from_config(self, cfg: dict) -> None:
+        """Restores all widgets from a previously saved user config dict."""
+        # LLM model
+        idx = self.combo_model.findText(cfg.get("model", ""))
+        if idx >= 0:
+            self.combo_model.setCurrentIndex(idx)
+
+        # Max scenes
+        self.spin_max_scenes.setValue(int(cfg.get("max_scenes", 8)))
+
+        # Voice
+        idx = self.combo_voice.findText(cfg.get("voice", ""))
+        if idx >= 0:
+            self.combo_voice.setCurrentIndex(idx)
+
+        # Speed (stored as int 50-200)
+        self.slider_speed.setValue(int(cfg.get("speed", 100)))
+
+        # Resolution
+        idx = self.combo_res.findText(cfg.get("resolution", ""))
+        if idx >= 0:
+            self.combo_res.setCurrentIndex(idx)
+
+        # FPS
+        idx = self.combo_fps.findText(cfg.get("fps", ""))
+        if idx >= 0:
+            self.combo_fps.setCurrentIndex(idx)
+
+        # Codec preset
+        idx = self.combo_preset.findText(cfg.get("preset", ""))
+        if idx >= 0:
+            self.combo_preset.setCurrentIndex(idx)
+
+        # Orientation
+        idx = self.combo_orientation.findText(cfg.get("orientation", ""))
+        if idx >= 0:
+            self.combo_orientation.setCurrentIndex(idx)
+
+        # Output path
+        if cfg.get("output"):
+            self.edit_output.setText(cfg["output"])
+
+        # Open when done
+        self.chk_open_when_done.setChecked(bool(cfg.get("open_when_done", True)))
+
     def validation_errors(self) -> list[str]:
         """Returns a list of validation errors."""
         errors = []
@@ -586,6 +631,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._worker: PipelineWorker | None = None
+        self._final_video_path = None
         self._log_handler = QtLogHandler()
         self._log_handler.log_signal.connect(self._receive_log)
         self._connect_logging()
@@ -598,6 +644,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("FreeVi — PDF Video Generator")
         self.setMinimumSize(1050, 700)
         self.resize(1200, 800)
+
+        # Restore last-used configuration
+        import user_config as _uc
+        self._uc = _uc
+        self.panel_config.load_from_config(_uc.load())
 
     # ── Initialization helpers ──
 
@@ -1023,6 +1074,9 @@ class MainWindow(QMainWindow):
         # Apply video config to the freevi module before running
         self._apply_video_config(config)
 
+        # Persist configuration so it is restored on next launch
+        self._uc.save(config)
+
         # Reset UI
         self.panel_progress.reset()
         self.btn_start.setEnabled(False)
@@ -1120,6 +1174,11 @@ class MainWindow(QMainWindow):
                 return
             self._worker.cancel()
             self._worker.wait(3000)
+        # Persist current settings before closing
+        self._uc.save_from_panel(self.panel_config)
+        # Detach the Qt log handler before Qt destroys the C++ objects,
+        # so Python's logging atexit hook doesn't crash on a dangling pointer.
+        logging.getLogger("freevi").removeHandler(self._log_handler)
         event.accept()
 
 

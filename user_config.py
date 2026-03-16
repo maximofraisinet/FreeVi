@@ -1,0 +1,166 @@
+"""
+user_config.py — Persistent user configuration for FreeVi GUI
+==============================================================
+Stores the last-used settings in:
+    Linux / macOS : ~/.config/freevi/user_config.json
+    Windows       : %APPDATA%/freevi/user_config.json
+
+This file is never part of the repository; it is created automatically on
+first launch and lives only on the local machine.
+"""
+
+import json
+import logging
+import os
+from pathlib import Path
+
+log = logging.getLogger("freevi.config")
+
+
+# ── Config file path ──────────────────────────────────────────────────────────
+
+def _config_path() -> Path:
+    """Returns the path to the config file (same directory as this script)."""
+    return Path(__file__).parent / "user_config.json"
+
+
+# ── Default values ────────────────────────────────────────────────────────────
+
+# Used when the file does not exist yet (first launch).
+# NOTE: pexels_key and pdf_path are intentionally NOT persisted here.
+#   pexels_key  → loaded from .env / environment variable (security).
+#   pdf_path    → changes every run; no value in remembering it.
+DEFAULTS: dict = {
+    "model":          "qwen3",
+    "max_scenes":     8,
+    "voice":          "im_nicola",
+    "speed":          100,          # slider int (50–200); divide by 100 → actual speed
+    "resolution":     "1920×1080 (Full HD)",
+    "fps":            "24 fps",
+    "preset":         "medium",
+    "orientation":    "landscape",
+    "output":         "output/video_final.mp4",
+    "open_when_done": True,
+}
+
+
+# ── Internal helpers (defined first so load() can call them) ──────────────────
+
+def _write(path: Path, data: dict) -> None:
+    """Atomically writes *data* as indented JSON to *path*, creating dirs."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        log.debug(f"User config written to {path}")
+    except Exception as e:
+        log.warning(f"Could not write user config ({path}): {e}")
+
+
+def _resolution_label(resolution) -> str:
+    """Converts a (width, height) tuple back to the combo-box label string."""
+    mapping = {
+        (1920, 1080): "1920×1080 (Full HD)",
+        (1280, 720):  "1280×720 (HD)",
+        (3840, 2160): "3840×2160 (4K)",
+    }
+    if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
+        return mapping.get(tuple(resolution), DEFAULTS["resolution"])
+    return resolution if isinstance(resolution, str) else DEFAULTS["resolution"]
+
+
+def _fps_label(fps) -> str:
+    """Converts an integer fps value back to the combo-box label string."""
+    mapping = {24: "24 fps", 30: "30 fps", 60: "60 fps"}
+    if isinstance(fps, int):
+        return mapping.get(fps, DEFAULTS["fps"])
+    return fps if isinstance(fps, str) else DEFAULTS["fps"]
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def load() -> dict:
+    """
+    Loads the user configuration from disk.
+
+    On first launch the file does not exist yet: it is created immediately
+    with the default values so it is always present after the program opens.
+
+    On subsequent launches the stored values are merged with DEFAULTS, so any
+    new key added in future versions always has a sensible fallback.
+
+    Returns:
+        A dict with all configuration keys ready to be fed to
+        ConfigPanel.load_from_config().
+    """
+    path = _config_path()
+    if not path.exists():
+        log.debug(f"First launch — creating default config at {path}")
+        defaults = dict(DEFAULTS)
+        _write(path, defaults)
+        return defaults
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            stored = json.load(f)
+        merged = {**DEFAULTS, **stored}   # DEFAULTS fill missing keys
+        log.debug(f"User config loaded from {path}")
+        return merged
+    except Exception as e:
+        log.warning(f"Could not read user config ({path}): {e}. Using defaults.")
+        return dict(DEFAULTS)
+
+
+def save(config: dict) -> None:
+    """
+    Persists the relevant subset of the current GUI configuration to disk.
+
+    Args:
+        config: The full config dict returned by ConfigPanel.get_config()
+                (keys pdf_path and pexels_key are silently ignored).
+    """
+    to_save = {
+        "model":          config.get("model",          DEFAULTS["model"]),
+        "max_scenes":     config.get("max_scenes",     DEFAULTS["max_scenes"]),
+        "voice":          config.get("voice",          DEFAULTS["voice"]),
+        # Convert float speed → slider int so load_from_config() can apply it directly
+        "speed":          int(config.get("speed", 1.0) * 100),
+        "resolution":     _resolution_label(config.get("resolution", (1920, 1080))),
+        "fps":            _fps_label(config.get("fps", 24)),
+        "preset":         config.get("preset",         DEFAULTS["preset"]),
+        "orientation":    config.get("orientation",    DEFAULTS["orientation"]),
+        "output":         config.get("output",         DEFAULTS["output"]),
+        "open_when_done": config.get("open_when_done", DEFAULTS["open_when_done"]),
+    }
+    _write(_config_path(), to_save)
+
+
+def save_from_panel(panel) -> None:
+    """
+    Reads the current widget state directly from a ConfigPanel instance and
+    saves it. Used by closeEvent so settings are always persisted on exit,
+    even if the pipeline was never run during that session.
+
+    Args:
+        panel: A ConfigPanel instance.
+    """
+    res_map = {
+        "1920×1080 (Full HD)": (1920, 1080),
+        "1280×720 (HD)":       (1280, 720),
+        "3840×2160 (4K)":      (3840, 2160),
+    }
+    fps_map = {"24 fps": 24, "30 fps": 30, "60 fps": 60}
+
+    raw = {
+        "model":          panel.combo_model.currentText(),
+        "max_scenes":     panel.spin_max_scenes.value(),
+        "voice":          panel.combo_voice.currentText(),
+        "speed":          panel.slider_speed.value() / 100.0,
+        "resolution":     res_map.get(panel.combo_res.currentText(), (1920, 1080)),
+        "fps":            fps_map.get(panel.combo_fps.currentText(), 24),
+        "preset":         panel.combo_preset.currentText(),
+        "orientation":    panel.combo_orientation.currentText(),
+        "output":         panel.edit_output.text(),
+        "open_when_done": panel.chk_open_when_done.isChecked(),
+    }
+    save(raw)
