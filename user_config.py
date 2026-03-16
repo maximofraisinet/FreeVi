@@ -1,12 +1,9 @@
 """
 user_config.py — Persistent user configuration for FreeVi GUI
 ==============================================================
-Stores the last-used settings in:
-    Linux / macOS : ~/.config/freevi/user_config.json
-    Windows       : %APPDATA%/freevi/user_config.json
-
-This file is never part of the repository; it is created automatically on
-first launch and lives only on the local machine.
+Stores the last-used settings in ``user_config.json`` next to this script
+(i.e. inside the project directory).  The file is git-ignored and created
+automatically on first launch.
 """
 
 import json
@@ -44,9 +41,6 @@ DEFAULTS: dict = {
     "open_when_done":      True,
     # Empty string means "use the built-in DEFAULT_CUSTOM_INSTRUCTIONS from freevi.py"
     "custom_instructions": "",
-    # NOTE: pexels_key and pdf_path are intentionally NOT persisted here.
-    #   pexels_key  → loaded from .env / environment variable (security).
-    #   pdf_path    → changes every run; no value in remembering it.
 }
 
 

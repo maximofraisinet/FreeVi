@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import fitz  # PyMuPDF
-import numpy as np
 import ollama
 import requests
 import soundfile as sf
@@ -770,9 +769,76 @@ def search_and_download_video(
 # ---------------------------------------------------------------------------
 # 5. ASSEMBLY MODULE (MoviePy)
 # ---------------------------------------------------------------------------
+def assemble_scene_from_raw(
+    raw_video_path: str,
+    audio_path: str,
+    target_duration: float,
+    output_path: str,
+) -> str:
+    """
+    Trims/loops the raw stock video to the exact audio duration, resizes it,
+    and mixes in the audio — all in a **single encode pass**.
+
+    This replaces the previous two-step approach (fit_video_to_duration →
+    assemble_scene) which wrote an intermediate _processed.mp4 and then
+    re-encoded it a second time.  Doing it in one pass halves the CPU time
+    per scene.
+
+    Args:
+        raw_video_path: Path to the video downloaded from Pexels.
+        audio_path: Path to the .wav audio file for this scene.
+        target_duration: Exact audio duration in seconds.
+        output_path: Path for the finished scene video file (video + audio).
+
+    Returns:
+        Path to the assembled scene video (same as output_path).
+    """
+    clip = VideoFileClip(raw_video_path)
+    audio = AudioFileClip(audio_path)
+
+    log.info(
+        f"  Original video: {clip.duration:.2f}s → Target: {target_duration:.2f}s"
+    )
+
+    # Trim or loop to match audio duration exactly
+    if clip.duration >= target_duration:
+        adjusted = clip.subclipped(0, target_duration)
+    else:
+        repetitions = int(target_duration / clip.duration) + 1
+        adjusted = concatenate_videoclips([clip] * repetitions, method="compose")
+        adjusted = adjusted.subclipped(0, target_duration)
+
+    # Resize to target resolution if needed
+    w, h = adjusted.size
+    if w != TARGET_WIDTH or h != TARGET_HEIGHT:
+        adjusted = adjusted.resized(new_size=(TARGET_WIDTH, TARGET_HEIGHT))
+
+    # Set FPS and attach audio — single encode pass
+    adjusted = adjusted.with_fps(TARGET_FPS).with_audio(audio)
+
+    adjusted.write_videofile(
+        output_path,
+        codec="libx264",
+        audio_codec="aac",
+        preset=TARGET_PRESET,
+        logger=None,
+    )
+
+    clip.close()
+    audio.close()
+    adjusted.close()
+
+    log.info(f"  Scene assembled: {output_path}")
+    return output_path
+
+
 def fit_video_to_duration(video_path: str, target_duration: float, output_path: str) -> str:
     """
     Adjusts a stock video to match the exact audio duration.
+
+    .. deprecated::
+        Use :func:`assemble_scene_from_raw` instead, which combines this step
+        with audio mixing into a single encode pass.
 
     If the video is longer → trim it (subclip).
     If the video is shorter → loop it until it covers the duration.
@@ -861,17 +927,82 @@ def assemble_scene(scene: Scene, output_path: str) -> str:
 
 def concatenate_scenes(scene_paths: list[str], final_path: str) -> str:
     """
-    Concatenates all scenes into a single final video.
+    Concatenates all scene files into a single final video **without
+    re-encoding** using the ffmpeg ``concat`` demuxer.
+
+    All scene files must share the same codec, resolution and frame-rate —
+    which is guaranteed by :func:`assemble_scene_from_raw` (libx264 + aac,
+    TARGET_WIDTH × TARGET_HEIGHT, TARGET_FPS).  Under these conditions ffmpeg
+    simply copies the compressed packets straight into the output container in
+    a fraction of the time that a full transcode would take.
+
+    Falls back to the MoviePy re-encode path if ffmpeg is not available or
+    the stream-copy fails for any reason.
 
     Args:
-        scene_paths: List of paths to each scene's video file.
-        final_path: Output path for the final video.
+        scene_paths: Ordered list of paths to each assembled scene .mp4 file.
+        final_path: Output path for the final concatenated video.
 
     Returns:
-        Path to the final video.
+        Path to the final video (same as *final_path*).
+    """
+    import shutil
+    import subprocess
+
+    # ── Build a temporary concat list file ───────────────────────────────────
+    # ffmpeg concat demuxer format:
+    #   file '/absolute/path/to/scene.mp4'
+    #   file '/absolute/path/to/scene2.mp4'
+    #   ...
+    list_fd, list_path = tempfile.mkstemp(suffix=".txt", prefix="freevi_concat_")
+    try:
+        with os.fdopen(list_fd, "w", encoding="utf-8") as f:
+            for p in scene_paths:
+                # Use absolute paths and escape single quotes
+                abs_p = os.path.abspath(p).replace("'", "'\\''")
+                f.write(f"file '{abs_p}'\n")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", list_path,
+            "-c", "copy",          # stream copy — no re-encode
+            final_path,
+        ]
+        log.info(f"  ffmpeg concat (stream copy): {len(scene_paths)} scenes → {final_path}")
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        if result.returncode != 0:
+            err = result.stderr.decode(errors="replace")
+            raise RuntimeError(f"ffmpeg concat failed:\n{err}")
+
+    except FileNotFoundError:
+        # ffmpeg binary not on PATH — fall back to MoviePy
+        log.warning("  ffmpeg not found on PATH; falling back to MoviePy re-encode.")
+        os.unlink(list_path)
+        return _concatenate_scenes_moviepy(scene_paths, final_path)
+    except Exception as e:
+        log.warning(f"  ffmpeg concat failed ({e}); falling back to MoviePy re-encode.")
+        return _concatenate_scenes_moviepy(scene_paths, final_path)
+    finally:
+        if os.path.exists(list_path):
+            os.unlink(list_path)
+
+    log.info(f"Final video generated: {final_path}")
+    return final_path
+
+
+def _concatenate_scenes_moviepy(scene_paths: list[str], final_path: str) -> str:
+    """
+    Fallback concatenation via MoviePy (full re-encode).
+    Used only when the ffmpeg stream-copy path is unavailable.
     """
     clips = [VideoFileClip(path) for path in scene_paths]
-
     final_video = concatenate_videoclips(clips, method="compose")
     final_video.write_videofile(
         final_path,
@@ -880,12 +1011,10 @@ def concatenate_scenes(scene_paths: list[str], final_path: str) -> str:
         preset=TARGET_PRESET,
         logger=None,
     )
-
     for clip in clips:
         clip.close()
     final_video.close()
-
-    log.info(f"Final video generated: {final_path}")
+    log.info(f"Final video generated (MoviePy fallback): {final_path}")
     return final_path
 
 
@@ -911,10 +1040,14 @@ class VideoGenerator:
         voice: str = "im_nicola",
         voice_speed: float = 1.0,
         output_path: str = "output/video_final.mp4",
+        max_scenes: int = 8,
+        context_size: int = 8192,
     ):
         self.pdf_path = pdf_path
         self.llm_model = llm_model
         self.output_path = output_path
+        self.max_scenes = max_scenes
+        self.context_size = context_size
         self.audio_engine = AudioEngine(voice=voice, speed=voice_speed)
         self.pexels_api_key = get_pexels_api_key()
         self.temp_dir = tempfile.mkdtemp(prefix="freevi_")
@@ -932,7 +1065,12 @@ class VideoGenerator:
         log.info("=" * 60)
         log.info(f"STEP 2/5: Generating script with {self.llm_model}...")
         log.info("=" * 60)
-        script = generate_script(pdf_text, self.llm_model)
+        script = generate_script(
+            pdf_text,
+            self.llm_model,
+            max_scenes=self.max_scenes,
+            context_size=self.context_size,
+        )
 
         # Show script summary
         for scene in script.scenes:
@@ -981,20 +1119,14 @@ class VideoGenerator:
 
             scene.video_path = raw_video_path
 
-            # ── 3c: Fit video to exact audio duration ──
-            log.info(f"  [Video] Fitting to {duration:.3f}s...")
-            processed_video_path = os.path.join(
-                self.temp_dir, f"scene_{scene.number:02d}_processed.mp4"
-            )
-            fit_video_to_duration(raw_video_path, duration, processed_video_path)
-            scene.processed_video_path = processed_video_path
-
-            # ── 3d: Assemble audio + video for this scene ──
-            log.info(f"  [Assembly] Combining audio + video...")
+            # ── 3c: Fit video + mix audio in a single encode pass ──
+            log.info(f"  [Assembly] Encoding video + audio in one pass...")
             scene_final_path = os.path.join(
                 self.temp_dir, f"scene_{scene.number:02d}_final.mp4"
             )
-            assemble_scene(scene, scene_final_path)
+            assemble_scene_from_raw(
+                raw_video_path, audio_path, duration, scene_final_path
+            )
             final_scene_paths.append(scene_final_path)
 
             log.info(f"  Scene {scene.number} complete.")
@@ -1035,6 +1167,7 @@ class VideoGenerator:
             output_path,
             codec="libx264",
             audio=False,
+            preset=TARGET_PRESET,
             logger=None,
         )
         clip.close()
@@ -1086,17 +1219,31 @@ Prerequisites:
         default="output/video_final.mp4",
         help="Output video path (default: output/video_final.mp4)",
     )
+    parser.add_argument(
+        "--max-scenes",
+        type=int,
+        default=8,
+        help="Maximum number of scenes to generate (default: 8)",
+    )
+    parser.add_argument(
+        "--context-size",
+        type=int,
+        default=8192,
+        help="Ollama context window size in tokens (default: 8192)",
+    )
 
     args = parser.parse_args()
 
     log.info("=" * 60)
     log.info("  FreeVi - Video Generator from PDF")
     log.info("=" * 60)
-    log.info(f"  PDF:    {args.pdf}")
-    log.info(f"  Model:  {args.model}")
-    log.info(f"  Voice:  {args.voice}")
-    log.info(f"  Speed:  {args.speed}")
-    log.info(f"  Output: {args.output}")
+    log.info(f"  PDF:          {args.pdf}")
+    log.info(f"  Model:        {args.model}")
+    log.info(f"  Voice:        {args.voice}")
+    log.info(f"  Speed:        {args.speed}")
+    log.info(f"  Max scenes:   {args.max_scenes}")
+    log.info(f"  Context size: {args.context_size}")
+    log.info(f"  Output:       {args.output}")
     log.info("=" * 60)
 
     try:
@@ -1106,6 +1253,8 @@ Prerequisites:
             voice=args.voice,
             voice_speed=args.speed,
             output_path=args.output,
+            max_scenes=args.max_scenes,
+            context_size=args.context_size,
         )
         final_path = generator.run()
         log.info(f"\nVideo generated successfully: {final_path}")

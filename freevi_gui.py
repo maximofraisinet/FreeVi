@@ -16,8 +16,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from PyQt6.QtCore import (
-    Q_ARG,
-    QMetaObject,
     QMutex,
     QObject,
     Qt,
@@ -25,14 +23,13 @@ from PyQt6.QtCore import (
     QWaitCondition,
     pyqtSignal,
 )
-from PyQt6.QtGui import QColor, QFont, QIcon, QPalette, QTextCursor
+from PyQt6.QtGui import QFont, QIcon, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -45,7 +42,6 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QSlider,
     QSpinBox,
     QSplitter,
@@ -208,12 +204,11 @@ class PipelineWorker(QThread):
         from freevi import (
             AudioEngine,
             VideoGenerator,
-            fit_video_to_duration,
-            search_and_download_video,
-            assemble_scene,
+            assemble_scene_from_raw,
             concatenate_scenes,
             extract_pdf_text,
             generate_script,
+            search_and_download_video,
         )
         import tempfile, shutil, os
 
@@ -326,14 +321,13 @@ class PipelineWorker(QThread):
             if self._cancel:
                 return
 
-            # Fit video to audio duration
-            proc_path = os.path.join(temp_dir, f"scene_{num:02d}_processed.mp4")
-            fit_video_to_duration(raw_path, duration, proc_path)
-            scene.processed_video_path = proc_path
-
-            # Assemble
+            # Fit video + mix audio in a single encode pass
+            self.progress.emit(
+                base_progress + (num - 1) * progress_per_scene + progress_per_scene // 2,
+                f"Scene {num}/{total_scenes}: encoding video + audio...",
+            )
             scene_path = os.path.join(temp_dir, f"scene_{num:02d}_final.mp4")
-            assemble_scene(scene, scene_path)
+            assemble_scene_from_raw(raw_path, audio_path, duration, scene_path)
             final_paths.append(scene_path)
             self.log_msg.emit(f"  Scene {num} complete.", "INFO")
 
