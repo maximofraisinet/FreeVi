@@ -1144,7 +1144,7 @@ class MainWindow(QMainWindow):
 
         lbl_title = QLabel("FreeVi")
         lbl_title.setObjectName("titulo")
-        lbl_subtitle = QLabel("PDF Video Generator — 100% Local and Free")
+        lbl_subtitle = QLabel("PDF Video Generator — 100% Free")
         lbl_subtitle.setObjectName("subtitulo")
 
         lay.addWidget(lbl_title)
