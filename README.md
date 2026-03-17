@@ -2,6 +2,10 @@
 
 Automatically generate engaging videos from PDF documents using local AI and Text-to-Speech.
 
+<img width="1271" height="800" alt="1" src="https://github.com/user-attachments/assets/22a523a6-599a-4ce4-9afd-3073e3bf706b" />
+
+<img width="1272" height="801" alt="2" src="https://github.com/user-attachments/assets/b29a9c03-a1ca-4f67-9758-af96bc4e1326" />
+
 ## About
 
 FreeVi is a powerful tool that transforms PDF documents into audiovisual narratives. By leveraging local Large Language Models (LLMs) via Ollama, advanced Text-to-Speech (TTS) with Kokoro, and automatic background videos from Pexels, FreeVi allows you to create engaging content from text simply and efficiently.
