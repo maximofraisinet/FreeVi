@@ -166,6 +166,7 @@ class PipelineWorker(QThread):
     log_msg = pyqtSignal(str, str)             # (message, level: INFO/WARNING/ERROR)
     scene_started = pyqtSignal(int, int, str)  # (num, total, text_preview)
     script_ready = pyqtSignal(list)            # list of Scene objects — pause point
+
     finished = pyqtSignal(str)                 # path to the final video
     error = pyqtSignal(str)                    # error message
 
@@ -226,13 +227,24 @@ class PipelineWorker(QThread):
         # ── Step 2: Generate script ──
         self.progress.emit(15, f"Generating script with {cfg['model']}...")
         self.log_msg.emit(f"Generating script with model '{cfg['model']}'...", "INFO")
+
+        total_chunks: list[int] = []  # will be populated by on_progress callback
+
+        def _on_script_progress(done: int, total: int) -> None:
+            """Relays chunk-level progress (15 % → 30 %) to the GUI."""
+            total_chunks[:] = [total]
+            if total > 0:
+                pct = 15 + int(15 * done / total)
+                self.progress.emit(pct, f"Generating script — chunk {done}/{total}...")
+
         script = generate_script(
             text,
             cfg["model"],
             cfg["max_scenes"],
             cfg.get("custom_instructions", ""),
-            cfg.get("context_size", 8192),
+            cfg.get("chunk_size", 4096),
             narration_language=get_language_label(cfg.get("lang_code", "a")),
+            on_progress=_on_script_progress,
         )
         if self._cancel:
             return
@@ -364,6 +376,8 @@ class ConfigPanel(QWidget):
         super().__init__()
         self._models = ollama_models
         self._all_voices = kokoro_voices  # full flat list (used as fallback)
+        self._pdf_text: str = ""          # cached text from the last loaded PDF
+        self._n_chunks: int = 0           # last computed chunk count (0 = no PDF)
         self._build_ui()
 
     def _build_ui(self):
@@ -384,9 +398,14 @@ class ConfigPanel(QWidget):
         btn_pdf.setObjectName("btn_secondary")
         btn_pdf.clicked.connect(self._select_pdf)
 
+        self.lbl_chunks_info = QLabel("")
+        self.lbl_chunks_info.setStyleSheet("color: #565f89; font-size: 11px;")
+        self.lbl_chunks_info.setWordWrap(True)
+
         lay_input.addWidget(QLabel("PDF file:"), 0, 0)
         lay_input.addWidget(btn_pdf, 0, 1)
         lay_input.addWidget(self.lbl_pdf, 1, 0, 1, 2)
+        lay_input.addWidget(self.lbl_chunks_info, 2, 0, 1, 2)
         layout.addWidget(grp_input)
 
         # ── 2. LLM model ──
@@ -404,24 +423,42 @@ class ConfigPanel(QWidget):
         self.spin_max_scenes.setValue(8)
         self.spin_max_scenes.setToolTip("Maximum number of scenes the LLM will generate")
 
-        self.spin_context_size = QSpinBox()
-        self.spin_context_size.setRange(2048, 131072)
-        self.spin_context_size.setSingleStep(2048)
-        self.spin_context_size.setValue(8192)
-        self.spin_context_size.setToolTip(
-            "Context window size (num_ctx) passed to Ollama.\n"
-            "Increase this if the PDF text is long.\n"
-            "Higher values require more VRAM/RAM.\n"
-            "Common values: 4096, 8192, 16384, 32768"
+        self.spin_chunk_size = QSpinBox()
+        self.spin_chunk_size.setRange(512, 32768)
+        self.spin_chunk_size.setSingleStep(512)
+        self.spin_chunk_size.setValue(4096)
+        self.spin_chunk_size.setToolTip(
+            "How many tokens of PDF text to send to the LLM per call.\n"
+            "The actual Ollama context window is derived automatically\n"
+            "from this value (chunk + output budget + overhead).\n"
+            "Increase if the PDF is long; decrease to save VRAM/RAM.\n"
+            "Common values: 2048, 4096, 8192"
         )
+
+        # Live info label: shows the auto-calculated Ollama context window
+        self.lbl_context_info = QLabel("")
+        self.lbl_context_info.setStyleSheet("color: #565f89; font-size: 11px;")
+        self.lbl_context_info.setWordWrap(True)
+
+        # Update context info label whenever model or chunk size changes
+        self.combo_model.currentTextChanged.connect(self._update_context_info)
+        self.spin_chunk_size.valueChanged.connect(self._update_context_info)
+        self.spin_max_scenes.valueChanged.connect(self._update_context_info)
+
+        # Recompute n_chunks (and update max_scenes spinner) when chunk size changes
+        self.spin_chunk_size.valueChanged.connect(self._recompute_chunks)
 
         lay_llm.addWidget(QLabel("Model:"), 0, 0)
         lay_llm.addWidget(self.combo_model, 0, 1)
         lay_llm.addWidget(QLabel("Max scenes:"), 1, 0)
         lay_llm.addWidget(self.spin_max_scenes, 1, 1)
-        lay_llm.addWidget(QLabel("Context window (tokens):"), 2, 0)
-        lay_llm.addWidget(self.spin_context_size, 2, 1)
+        lay_llm.addWidget(QLabel("Chunk size (tokens):"), 2, 0)
+        lay_llm.addWidget(self.spin_chunk_size, 2, 1)
+        lay_llm.addWidget(self.lbl_context_info, 3, 0, 1, 2)
         layout.addWidget(grp_llm)
+
+        # Populate the info label with the initial values
+        self._update_context_info()
 
         # ── 3. Language & Voice (Kokoro) ──
         grp_voice = QGroupBox("Language & Voice (Kokoro 1.0)")
@@ -611,6 +648,29 @@ class ConfigPanel(QWidget):
         """Clears the prompt editor so the built-in default will be used."""
         self.txt_prompt.clear()
 
+    def _update_context_info(self, *_args):
+        """
+        Recalculates the auto-derived Ollama context window and updates
+        lbl_context_info.  Called whenever combo_model or spin_chunk_size changes.
+        """
+        try:
+            from freevi import (
+                _calculate_context_size,
+                _is_thinking_model,
+            )
+            model = self.combo_model.currentText()
+            chunk = self.spin_chunk_size.value()
+            thinking = _is_thinking_model(model)
+            # Use 1 scene per chunk as the minimum; gives a conservative estimate
+            max_scenes = self.spin_max_scenes.value()
+            ctx = _calculate_context_size(chunk, max(1, max_scenes), thinking)
+            thinking_note = "  (thinking model: +2048 overhead)" if thinking else ""
+            self.lbl_context_info.setText(
+                f"→ Ollama context window: {ctx:,} tokens{thinking_note}"
+            )
+        except Exception:
+            self.lbl_context_info.setText("")
+
     def _on_language_changed(self):
         """Repopulates the voice combo when the user selects a different language."""
         lang_code = self.combo_language.currentData()
@@ -636,6 +696,83 @@ class ConfigPanel(QWidget):
             self.lbl_pdf.setText(path)
             self.lbl_pdf.setStyleSheet("color: #c0caf5;")
             self.lbl_pdf.setToolTip(path)
+            self._load_pdf_and_recompute(path)
+
+    def _load_pdf_and_recompute(self, path: str) -> None:
+        """
+        Extracts text from *path* (showing a progress dialog while doing so),
+        caches it in self._pdf_text, then calls _recompute_chunks().
+        """
+        from PyQt6.QtWidgets import QProgressDialog
+        from PyQt6.QtCore import Qt
+
+        dlg = QProgressDialog("Reading PDF…", None, 0, 0, self)
+        dlg.setWindowTitle("Please wait")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        QApplication.processEvents()
+
+        try:
+            from freevi import extract_pdf_text
+            self._pdf_text = extract_pdf_text(path)
+        except Exception as exc:
+            self._pdf_text = ""
+            self._n_chunks = 0
+            self.lbl_chunks_info.setText(f"Could not read PDF: {exc}")
+        finally:
+            dlg.close()
+
+        if self._pdf_text:
+            self._recompute_chunks()
+
+    def _recompute_chunks(self, *_args) -> None:
+        """
+        Recalculates n_chunks from the cached PDF text and the current chunk
+        size, then updates spin_max_scenes (minimum, step, and value).
+
+        Rules applied to spin_max_scenes:
+          • minimum  = n_chunks          (at least 1 scene per chunk)
+          • singleStep = n_chunks        (values grow in steps of n_chunks)
+          • value is rounded UP to the nearest multiple of n_chunks if it
+            is not already valid; otherwise it is left unchanged.
+
+        Does nothing if no PDF has been loaded yet.
+        """
+        if not self._pdf_text:
+            return
+
+        try:
+            from freevi import count_chunks
+            chunk_tokens = self.spin_chunk_size.value()
+            n = count_chunks(self._pdf_text, chunk_tokens)
+        except Exception:
+            return
+
+        self._n_chunks = n
+
+        # Update the info label in the Input group
+        self.lbl_chunks_info.setText(
+            f"→ {n} chunk(s) with {chunk_tokens:,} tokens/chunk"
+        )
+
+        # Block signals so setting min/step/value doesn't trigger _recompute_chunks again
+        self.spin_max_scenes.blockSignals(True)
+        self.spin_max_scenes.setMinimum(n)
+        self.spin_max_scenes.setSingleStep(n)
+
+        current = self.spin_max_scenes.value()
+        # Round current value UP to the nearest multiple of n
+        if current < n:
+            self.spin_max_scenes.setValue(n)
+        elif current % n != 0:
+            self.spin_max_scenes.setValue(current + (n - current % n))
+        # else: already a valid multiple — leave it as-is
+
+        self.spin_max_scenes.blockSignals(False)
+
+        # Refresh context info label (depends on max_scenes which may have changed)
+        self._update_context_info()
 
     def _select_output(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -668,7 +805,7 @@ class ConfigPanel(QWidget):
             "voice": self.combo_voice.currentText(),
             "speed": self.slider_speed.value() / 100.0,
             "max_scenes": self.spin_max_scenes.value(),
-            "context_size": self.spin_context_size.value(),
+            "chunk_size": self.spin_chunk_size.value(),
             "resolution": res_map[self.combo_res.currentText()],
             "fps": fps_map[self.combo_fps.currentText()],
             "preset": self.combo_preset.currentText(),
@@ -689,8 +826,8 @@ class ConfigPanel(QWidget):
         # Max scenes
         self.spin_max_scenes.setValue(int(cfg.get("max_scenes", 8)))
 
-        # Context window
-        self.spin_context_size.setValue(int(cfg.get("context_size", 8192)))
+        # Chunk size
+        self.spin_chunk_size.setValue(int(cfg.get("chunk_size", 4096)))
 
         # Language — must be set BEFORE voice so _on_language_changed populates
         # the correct voice list first
