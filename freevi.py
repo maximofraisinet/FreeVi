@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import fitz  # PyMuPDF
+import numpy as np
 import ollama
 import requests
 import soundfile as sf
@@ -1006,9 +1007,93 @@ class AudioEngine:
         text = re.sub(r'  +', ' ', text)
         return text.strip()
 
+    @staticmethod
+    def _split_sentences(text: str) -> list[tuple[str, float]]:
+        """
+        Splits text into (sentence, pause_after_seconds) pairs.
+
+        Pause durations by punctuation:
+          - Comma, colon, semicolon            → 0.15 s  (short breath)
+          - Period, exclamation, question mark → 0.40 s  (sentence boundary)
+          - Ellipsis (… or ...)                → 0.55 s  (dramatic pause)
+
+        Sentences shorter than 2 characters after stripping are dropped.
+
+        Returns:
+            List of (text_fragment, pause_seconds) tuples. The last fragment
+            carries a pause of 0 since there is nothing after it.
+        """
+        # Normalise ellipsis variants before splitting
+        text = text.replace('...', '…').replace('. . .', '…')
+
+        # Split keeping the delimiter attached to the left fragment via a
+        # capturing group inside a lookbehind — we want to know *which*
+        # punctuation triggered the split.
+        parts = re.split(r'(?<=[.!?…;:,])\s+', text)
+
+        result: list[tuple[str, float]] = []
+        for i, part in enumerate(parts):
+            part = part.strip()
+            if len(part) < 2:
+                continue
+            is_last = (i == len(parts) - 1)
+            if is_last:
+                pause = 0.0
+            elif part.endswith('…'):
+                pause = 0.55
+            elif part[-1] in '.!?':
+                pause = 0.40
+            elif part[-1] in ';:':
+                pause = 0.20
+            elif part[-1] == ',':
+                pause = 0.15
+            else:
+                pause = 0.25   # mid-sentence break without explicit punctuation
+            result.append((part, pause))
+
+        # Fallback: if splitting produced nothing, treat the whole text as one
+        if not result:
+            result = [(text, 0.0)]
+
+        return result
+
+    def _synth(self, text: str) -> tuple[np.ndarray, int]:
+        """
+        Runs a single Kokoro inference call and returns (samples, sample_rate).
+        Raises RuntimeError on failure.
+        """
+        if self.g2p is not None:
+            phonemes = self.g2p(text)
+            if not phonemes:
+                log.warning("  G2P returned empty phonemes, using text directly.")
+                phonemes = text
+            samples, sample_rate = self.kokoro.create(
+                phonemes,
+                voice=self.voice,
+                speed=self.speed,
+                is_phonemes=True,
+            )
+        else:
+            samples, sample_rate = self.kokoro.create(
+                text,
+                voice=self.voice,
+                speed=self.speed,
+                lang=self.lang_code,
+            )
+        return samples, sample_rate
+
     def generate_audio(self, text: str, output_path: str) -> float:
         """
         Generates a .wav file from text in the configured language.
+
+        The text is split into sentences/clauses and each fragment is
+        synthesised individually. Short silences are inserted between
+        fragments according to the trailing punctuation, producing a more
+        natural-sounding narration with human-like breathing room:
+
+          - Comma / colon / semicolon  → 150 ms
+          - Period / ! / ?             → 400 ms
+          - Ellipsis                   → 550 ms
 
         Args:
             text: Text to synthesize (in the voice's language).
@@ -1021,38 +1106,27 @@ class AudioEngine:
         text = self._clean_tts_text(text)
 
         try:
-            if self.g2p is not None:
-                # Convert text to phonemes via misaki espeak
-                # misaki 0.7+ EspeakG2P returns str directly
-                phonemes = self.g2p(text)
-                if not phonemes:
-                    log.warning("  G2P returned empty phonemes, using text directly.")
-                    phonemes = text
-                samples, sample_rate = self.kokoro.create(
-                    phonemes,
-                    voice=self.voice,
-                    speed=self.speed,
-                    is_phonemes=True,
-                )
-            else:
-                # Direct mode: Japanese, Chinese, or fallback when misaki
-                # is not installed. Pass lang_code so Kokoro picks the
-                # correct internal G2P.
-                samples, sample_rate = self.kokoro.create(
-                    text,
-                    voice=self.voice,
-                    speed=self.speed,
-                    lang=self.lang_code,
-                )
+            sentences = self._split_sentences(text)
+            log.info(f"  [Audio] {len(sentences)} sentence(s) to synthesise")
 
-            # Save audio
-            sf.write(output_path, samples, sample_rate)
+            all_chunks: list[np.ndarray] = []
+            sample_rate: int = 24000   # Kokoro default; overwritten on first call
 
-            # Calculate exact duration from samples
-            duration = len(samples) / sample_rate
+            for fragment, pause in sentences:
+                samples, sample_rate = self._synth(fragment)
+                all_chunks.append(samples)
+                if pause > 0.0:
+                    silence_samples = int(pause * sample_rate)
+                    all_chunks.append(np.zeros(silence_samples, dtype=samples.dtype))
+
+            final_samples = np.concatenate(all_chunks) if all_chunks else np.zeros(0)
+
+            sf.write(output_path, final_samples, sample_rate)
+
+            duration = len(final_samples) / sample_rate
             log.info(
                 f"  Audio generated: {duration:.2f}s "
-                f"({len(samples)} samples @ {sample_rate}Hz)"
+                f"({len(final_samples)} samples @ {sample_rate}Hz)"
             )
             return duration
 
