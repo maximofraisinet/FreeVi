@@ -163,7 +163,7 @@ def save_from_panel(panel) -> None:
         "speed":               panel.slider_speed.value() / 100.0,
         "resolution":          res_map.get(panel.combo_res.currentText(), (1920, 1080)),
         "fps":                 fps_map.get(panel.combo_fps.currentText(), 24),
-        "preset":              panel.combo_preset.currentText(),
+        "preset":              panel.combo_preset.currentData() or "medium",
         "orientation":         panel.combo_orientation.currentText(),
         "output":              panel.edit_output.text(),
         "open_when_done":      panel.chk_open_when_done.isChecked(),

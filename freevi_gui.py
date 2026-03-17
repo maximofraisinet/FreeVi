@@ -276,6 +276,7 @@ class PipelineWorker(QThread):
         pexels_key = cfg["pexels_key"]
         temp_dir = tempfile.mkdtemp(prefix="freevi_")
         final_paths = []
+        used_video_urls: set[str] = set()   # prevents reusing the same Pexels clip
 
         total_scenes = len(script.scenes)
         base_progress = 20
@@ -316,6 +317,7 @@ class PipelineWorker(QThread):
                 raw_path,
                 orientation=cfg.get("orientation", "landscape"),
                 target_duration=duration,
+                used_urls=used_video_urls,
             )
             if not success:
                 self.log_msg.emit(
@@ -419,7 +421,8 @@ class ConfigPanel(QWidget):
         self.combo_model.setToolTip("Ollama models installed on this system")
 
         self.spin_max_scenes = QSpinBox()
-        self.spin_max_scenes.setRange(2, 20)
+        self.spin_max_scenes.setRange(1, 500)
+        self.spin_max_scenes.setSingleStep(1)
         self.spin_max_scenes.setValue(8)
         self.spin_max_scenes.setToolTip("Maximum number of scenes the LLM will generate")
 
@@ -526,11 +529,30 @@ class ConfigPanel(QWidget):
         self.combo_fps.setToolTip("Output video frames per second")
 
         self.combo_preset = QComboBox()
-        self.combo_preset.addItems(["medium", "fast", "slow", "ultrafast", "veryslow"])
+        for _label, _value in [
+            ("Ultrafast — fastest encoding, largest file", "ultrafast"),
+            ("Very Fast",                                  "veryfast"),
+            ("Fast",                                       "fast"),
+            ("Medium — balanced (default)",                "medium"),
+            ("Slow — best compression, smallest file",     "slow"),
+        ]:
+            self.combo_preset.addItem(_label, userData=_value)
+        self.combo_preset.setCurrentIndex(3)   # default: Medium
         self.combo_preset.setToolTip(
-            "x264 encoding preset:\n"
-            "  ultrafast = fastest, largest file\n"
-            "  veryslow  = slowest, smallest file"
+            "x264 encoding preset — controls the trade-off between encoding\n"
+            "speed and output file size. Visual quality stays the same across\n"
+            "all presets at the same bitrate; only speed and file size differ.\n"
+            "\n"
+            "  Ultrafast  — encodes in seconds; file ~40% larger than Medium.\n"
+            "               Good for quick previews or testing.\n"
+            "  Very Fast  — still much faster than Medium; file ~20% larger.\n"
+            "  Fast       — good daily-use balance; file ~10% larger.\n"
+            "  Medium     — ffmpeg/x264 default. Recommended for final output.\n"
+            "  Slow       — takes noticeably longer; file ~10–15% smaller.\n"
+            "               Worth it only if storage space is a concern.\n"
+            "\n"
+            "Tip: use Ultrafast or Fast while iterating, then switch to\n"
+            "Medium or Slow for the final render."
         )
 
         self.combo_orientation = QComboBox()
@@ -759,6 +781,7 @@ class ConfigPanel(QWidget):
         # Block signals so setting min/step/value doesn't trigger _recompute_chunks again
         self.spin_max_scenes.blockSignals(True)
         self.spin_max_scenes.setMinimum(n)
+        self.spin_max_scenes.setMaximum(max(500, n * 50))
         self.spin_max_scenes.setSingleStep(n)
 
         current = self.spin_max_scenes.value()
@@ -808,7 +831,7 @@ class ConfigPanel(QWidget):
             "chunk_size": self.spin_chunk_size.value(),
             "resolution": res_map[self.combo_res.currentText()],
             "fps": fps_map[self.combo_fps.currentText()],
-            "preset": self.combo_preset.currentText(),
+            "preset": self.combo_preset.currentData() or "medium",
             "orientation": self.combo_orientation.currentText(),
             "pexels_key": pexels_key,
             "output": self.edit_output.text(),
@@ -857,10 +880,12 @@ class ConfigPanel(QWidget):
         if idx >= 0:
             self.combo_fps.setCurrentIndex(idx)
 
-        # Codec preset
-        idx = self.combo_preset.findText(cfg.get("preset", ""))
-        if idx >= 0:
-            self.combo_preset.setCurrentIndex(idx)
+        # Codec preset — items use userData (raw value) so we search by data
+        preset_val = cfg.get("preset", "medium")
+        for i in range(self.combo_preset.count()):
+            if self.combo_preset.itemData(i) == preset_val:
+                self.combo_preset.setCurrentIndex(i)
+                break
 
         # Orientation
         idx = self.combo_orientation.findText(cfg.get("orientation", ""))

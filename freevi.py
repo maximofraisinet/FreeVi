@@ -1091,6 +1091,7 @@ def search_pexels_video(
     api_key: str,
     orientation: str = "landscape",
     target_duration: float = 0.0,
+    used_urls: set | None = None,
 ) -> dict | None:
     """
     Searches for a video on Pexels and returns info about the best result.
@@ -1100,11 +1101,18 @@ def search_pexels_video(
     first (most popular) result, which is often only loosely related to the
     query despite having a matching tag.
 
+    Already-used URLs are skipped so that no two scenes download the same clip.
+    If all candidates have already been used, the best one is returned anyway
+    with a warning rather than failing the scene entirely.
+
     Args:
         query: Search terms in English (2-5 words).
         api_key: Pexels API key.
         orientation: "landscape", "portrait" or "square".
         target_duration: Preferred video duration in seconds (0 = pick longest).
+        used_urls: Set of video URLs already downloaded in this run. Mutated by
+            the caller (:func:`search_and_download_video`) after a successful
+            download, not here.
 
     Returns:
         Dict with 'url' (download link), 'width', 'height', 'duration' or None.
@@ -1165,16 +1173,28 @@ def search_pexels_video(
         log.warning(f"  No mp4 files found for '{query}'")
         return None
 
+    # Partition candidates into fresh (not yet used) and already-seen.
+    _used = used_urls or set()
+    fresh = [c for c in candidates if c["url"] not in _used]
+    pool  = fresh if fresh else candidates   # fall back to full pool if all used
+
+    if not fresh:
+        log.warning(
+            f"  All {len(candidates)} Pexels candidates for '{query}' were already "
+            f"used in this run — reusing best available."
+        )
+
     # Select the candidate whose duration is closest to the target audio length.
     # If target_duration is 0 (unknown), pick the longest video (more material
     # for looping and less likely to loop with a visible cut).
     if target_duration > 0:
-        best = min(candidates, key=lambda c: abs(c["duration"] - target_duration))
+        best = min(pool, key=lambda c: abs(c["duration"] - target_duration))
     else:
-        best = max(candidates, key=lambda c: c["duration"])
+        best = max(pool, key=lambda c: c["duration"])
 
     log.info(
-        f"  Pexels: {len(candidates)} candidates for '{query}' → "
+        f"  Pexels: {len(candidates)} candidates for '{query}' "
+        f"({len(fresh)} fresh) → "
         f"selected {best['duration']}s video "
         f"(target {target_duration:.1f}s)"
     )
@@ -1220,6 +1240,7 @@ def search_and_download_video(
     output_path: str,
     orientation: str = "landscape",
     target_duration: float = 0.0,
+    used_urls: set | None = None,
 ) -> bool:
     """
     Searches and downloads a video from Pexels.
@@ -1238,6 +1259,9 @@ def search_and_download_video(
         orientation: "landscape", "portrait" or "square".
         target_duration: Audio duration in seconds — used to pick the best
             Pexels result (closest duration = less looping).
+        used_urls: Mutable set of video URLs already downloaded in this run.
+            On success the chosen URL is added to this set so subsequent scenes
+            can avoid reusing the same clip.
 
     Returns:
         True if downloaded successfully.
@@ -1264,7 +1288,9 @@ def search_and_download_video(
     info = None
     for attempt in unique_attempts:
         log.info(f"  Searching Pexels: '{attempt}'")
-        info = search_pexels_video(attempt, api_key, orientation, target_duration)
+        info = search_pexels_video(
+            attempt, api_key, orientation, target_duration, used_urls
+        )
         if info is not None:
             if attempt != query:
                 log.warning(f"  Original query '{query}' failed — using fallback '{attempt}'")
@@ -1274,7 +1300,10 @@ def search_and_download_video(
         log.error(f"  Could not find any video (query: '{query}')")
         return False
 
-    return download_video(info["url"], output_path)
+    ok = download_video(info["url"], output_path)
+    if ok and used_urls is not None:
+        used_urls.add(info["url"])
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -1554,6 +1583,7 @@ class VideoGenerator:
         max_scenes: int = 8,
         chunk_size: int = 4096,
         lang_code: str = "a",
+        orientation: str = "landscape",
     ):
         self.pdf_path = pdf_path
         self.llm_model = llm_model
@@ -1561,6 +1591,7 @@ class VideoGenerator:
         self.max_scenes = max_scenes
         self.chunk_size = chunk_size
         self.lang_code = lang_code
+        self.orientation = orientation
         self.audio_engine = AudioEngine(
             voice=voice, speed=voice_speed, lang_code=lang_code,
         )
@@ -1599,6 +1630,7 @@ class VideoGenerator:
 
         # ── Steps 3–4: Process each scene ──
         final_scene_paths = []
+        used_video_urls: set[str] = set()   # prevents reusing the same Pexels clip
 
         for scene in script.scenes:
             log.info("=" * 60)
@@ -1624,7 +1656,9 @@ class VideoGenerator:
                 scene.video_query,
                 self.pexels_api_key,
                 raw_video_path,
+                orientation=self.orientation,
                 target_duration=duration,
+                used_urls=used_video_urls,
             )
 
             if not success:
