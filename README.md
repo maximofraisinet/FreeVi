@@ -2,9 +2,9 @@
 
 Automatically generate engaging videos from PDF documents using local AI and Text-to-Speech.
 
-<img width="1271" height="800" alt="1" src="https://github.com/user-attachments/assets/22a523a6-599a-4ce4-9afd-3073e3bf706b" />
+<img width="1200" height="801" alt="1" src="https://github.com/user-attachments/assets/674a1b9d-8106-491b-8b70-1aad46e1ec53" />
 
-<img width="1272" height="801" alt="2" src="https://github.com/user-attachments/assets/b29a9c03-a1ca-4f67-9758-af96bc4e1326" />
+<img width="1200" height="799" alt="2" src="https://github.com/user-attachments/assets/bb2bda70-0d05-4ff1-9b26-fb5be2a22715" />
 
 ## About
 
