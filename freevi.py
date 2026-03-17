@@ -674,6 +674,55 @@ class AudioEngine:
             log.info(f"  {lang_label}: using Kokoro built-in G2P (no espeak needed)")
             self.g2p = None
 
+    @staticmethod
+    def _clean_tts_text(text: str) -> str:
+        """
+        Removes characters that TTS engines read aloud literally:
+          - Emoji (Unicode ranges for emoticons, symbols, pictographs, etc.)
+          - Asterisks used as markdown emphasis markers  (* and **)
+          - Isolated hash characters used as markdown headings (# at line start)
+          - Leading/trailing whitespace after cleaning.
+        """
+        # Strip markdown emphasis: **bold**, *italic*, ***both***
+        text = re.sub(r'\*+', '', text)
+        # Strip markdown headings: ## Title → Title
+        text = re.sub(r'^\s*#+\s*', '', text, flags=re.MULTILINE)
+        # Strip emoji — covers the main Unicode emoji blocks:
+        #   U+1F600-1F64F  Emoticons
+        #   U+1F300-1F5FF  Misc symbols & pictographs
+        #   U+1F680-1F6FF  Transport & map
+        #   U+1F700-1F77F  Alchemical symbols
+        #   U+1F780-1F7FF  Geometric shapes extended
+        #   U+1F800-1F8FF  Supplemental arrows-C
+        #   U+1F900-1F9FF  Supplemental symbols & pictographs
+        #   U+1FA00-1FA6F  Chess / symbols
+        #   U+1FA70-1FAFF  Symbols & pictographs extended-A
+        #   U+2600-26FF    Misc symbols (☀ ☁ ♥ etc.)
+        #   U+2700-27BF    Dingbats
+        #   U+FE00-FE0F    Variation selectors (emoji modifiers)
+        #   U+1F1E0-1F1FF  Regional indicator letters (flag emoji)
+        text = re.sub(
+            r'[\U0001F600-\U0001F64F'
+            r'\U0001F300-\U0001F5FF'
+            r'\U0001F680-\U0001F6FF'
+            r'\U0001F700-\U0001F77F'
+            r'\U0001F780-\U0001F7FF'
+            r'\U0001F800-\U0001F8FF'
+            r'\U0001F900-\U0001F9FF'
+            r'\U0001FA00-\U0001FA6F'
+            r'\U0001FA70-\U0001FAFF'
+            r'\U00002600-\U000026FF'
+            r'\U00002700-\U000027BF'
+            r'\U0000FE00-\U0000FE0F'
+            r'\U0001F1E0-\U0001F1FF'
+            r']',
+            '',
+            text,
+        )
+        # Collapse multiple spaces left by removals
+        text = re.sub(r'  +', ' ', text)
+        return text.strip()
+
     def generate_audio(self, text: str, output_path: str) -> float:
         """
         Generates a .wav file from text in the configured language.
@@ -686,6 +735,7 @@ class AudioEngine:
             Exact audio duration in seconds.
         """
         self._initialize()
+        text = self._clean_tts_text(text)
 
         try:
             if self.g2p is not None:
