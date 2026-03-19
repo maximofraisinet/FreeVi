@@ -99,9 +99,9 @@ python freevi.py document.pdf --visual-source slides_svg --slide-theme tokyo_nig
 
 | Option | Description | Time |
 |--------|-------------|------|
-| `pexels` | Stock videos from Pexels API | Fast |
-| `slides_simple` | Themed slides with text and icons | Medium |
-| `slides_svg` | Themed slides with AI-generated SVG illustrations and icons | Slower |
+| `pexels` | Stock videos from Pexels API | Slow |
+| `slides_simple` | Themed slides with text and icons | Fast |
+| `slides_svg` | Themed slides with AI-generated SVG illustrations and icons | Medium |
 
 ### Available Slide Themes
 
@@ -167,6 +167,6 @@ Tabler Icons is an open-source SVG icon library by [Tabler](https://tabler.io/).
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+This project is released into the public domain under **The Unlicense**. See [LICENSE](LICENSE) for details.
 
-Icons are property of their respective owners and are used here under their respective open-source licenses.
+**Note:** The icon library (Tabler Icons) is licensed separately under the MIT License. See credits above.
