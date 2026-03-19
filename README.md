@@ -1,6 +1,6 @@
 # FreeVi
 
-Automatically generate engaging videos from PDF documents using local AI and Text-to-Speech.
+Automatically generate engaging videos from PDF documents using local AI, Text-to-Speech, and customizable visual sources.
 
 <img width="1200" height="801" alt="1" src="https://github.com/user-attachments/assets/674a1b9d-8106-491b-8b70-1aad46e1ec53" />
 
@@ -8,77 +8,110 @@ Automatically generate engaging videos from PDF documents using local AI and Tex
 
 ## About
 
-FreeVi is a powerful tool that transforms PDF documents into audiovisual narratives. By leveraging local Large Language Models (LLMs) via Ollama, advanced Text-to-Speech (TTS) with Kokoro, and automatic background videos from Pexels, FreeVi allows you to create engaging content from text simply and efficiently.
+FreeVi transforms PDF documents into dynamic audiovisual narratives. Choose between **stock videos from Pexels** or **AI-generated slides** as your visual source. Built with local LLMs (via Ollama), high-quality TTS (Kokoro), and modern visual themes.
 
 ## Features
 
-- **PDF to Video:** Convert the text of your PDF documents into an audiovisual narrative.
-- **Smart Processing:** Uses local LLMs (via Ollama) to process and adapt the text into a script.
-- **Natural Voices (TTS):** High-quality, multilingual voice synthesis using Kokoro ONNX.
-- **Automatic Visuals:** Automatically integrates relevant background video clips using the Pexels API.
-- **Dual Interface:** Offers both an intuitive Graphical User Interface (GUI) and a Command-Line Interface (CLI).
+- **PDF to Video:** Convert PDF text into engaging audiovisual content.
+- **Multiple Visual Sources:** Choose between stock videos or AI-generated slides.
+  - **Pexels Videos:** Automatic background video clips.
+  - **AI Slides (Simple):** Clean, themed presentations with text.
+  - **AI Slides (with SVG):** Presentations with AI-generated geometric illustrations.
+- **Smart Processing:** Local LLM (Ollama) adapts text into natural narration scripts.
+- **Natural Voices:** Multilingual TTS using Kokoro ONNX.
+- **Customizable Themes:** Tokyo Night, Executive, and Minimal slide themes.
+- **Dual Interface:** Intuitive GUI or flexible CLI.
 
 ## Requirements
 
-Before you begin, ensure you have the following configured:
-
-1. **Python 3.8+** installed on your system.
-2. **Ollama:** Installed and running (`ollama serve`). You also need to download a base model (e.g., `ollama pull qwen3`).
-3. **Kokoro Models:** The Kokoro ONNX models must be placed in the `./kokoro-v1.0/` directory.
-4. **Pexels API Key:** Required to automatically download background videos.
+- **Python 3.10+** installed on your system.
+- **Ollama:** Installed and running (`ollama serve`). Download a model: `ollama pull qwen3`.
+- **Kokoro Models:** Place `kokoro-v1.0.onnx` and `voices-v1.0.bin` in `./kokoro-v1.0/`.
+- **Pexels API Key:** Required only for stock video mode.
 
 ## Installation
 
 ### 1. Clone and Install Dependencies
 
 ```bash
-# Clone the repository
 git clone https://github.com/maximofraisinet/FreeVi.git
 cd FreeVi
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Download the Kokoro v1.0 Voice Model
+### 2. Install System Dependencies
 
-Kokoro powers all built-in voices (English + Spanish). The model files are too large for GitHub, so download them manually:
-
-1. Go to the [kokoro-onnx releases page](https://github.com/thewh1teagle/kokoro-onnx/releases).
-2. Download `kokoro-v1.0.onnx` and `voices-v1.0.bin`.
-3. Place both files inside the `./kokoro-v1.0/` directory in the project.
-
-### 3. Configure Environment Variables
+For slide generation (AI Slides mode):
 
 ```bash
-# Configure Environment Variables
+# Ubuntu/Debian
+sudo apt install libcairo2 libcairo2-dev
+
+# macOS
+brew install cairo
+
+# Arch
+sudo pacman -S cairo
+```
+
+### 3. Download Kokoro Voice Models
+
+1. Download from [kokoro-onnx releases](https://github.com/thewh1teagle/kokoro-onnx/releases):
+   - `kokoro-v1.0.onnx`
+   - `voices-v1.0.bin`
+2. Place both in `./kokoro-v1.0/`.
+
+### 4. Configure Environment Variables (Optional)
+
+```bash
 cp .env.example .env
-# Open .env and add your PEXELS_API_KEY
+# Edit .env and add PEXELS_API_KEY (only needed for Pexels mode)
 ```
 
 ## Usage
 
 ### Graphical Interface (Recommended)
 
-The quickest path to get started is using the GUI:
-
 ```bash
 python freevi_gui.py
 ```
 
-### Command-Line Interface (CLI)
+The GUI lets you select:
+- **Visual Source:** Pexels (Videos), Slides (Simple), or Slides (with AI SVG)
+- **Slide Theme:** Tokyo Night, Executive, or Minimal
+- All other options (voice, language, resolution, etc.)
 
-For advanced users and automation:
+### Command-Line Interface
 
 ```bash
-# Basic example
+# Basic example (uses Pexels videos by default)
 python freevi.py document.pdf
 
-# Advanced example with options
-python freevi.py book.pdf --model qwen3 --voice af_heart --lang a --output result.mp4
+# Use AI slides instead of videos
+python freevi.py document.pdf --visual-source slides_simple --slide-theme executive
+
+# AI slides with SVG illustrations (slower, requires extra LLM calls)
+python freevi.py document.pdf --visual-source slides_svg --slide-theme tokyo_night
 ```
 
-**Available languages (`--lang`):**
+### Visual Source Options
+
+| Option | Description | Time |
+|--------|-------------|------|
+| `pexels` | Stock videos from Pexels API | Fast |
+| `slides_simple` | Themed slides with text only | Medium |
+| `slides_svg` | Themed slides with AI-generated SVG illustrations | Slower |
+
+### Available Slide Themes
+
+| Theme | Colors | Best For |
+|-------|--------|----------|
+| `tokyo_night` | Dark blue/purple | General purpose |
+| `executive` | Navy/white/blue | Professional presentations |
+| `minimal` | Black/white/cyan | Modern, clean look |
+
+### Languages (`--lang`)
+
 - `a` = English (American)
 - `b` = English (British)
 - `e` = Spanish
@@ -89,6 +122,31 @@ python freevi.py book.pdf --model qwen3 --voice af_heart --lang a --output resul
 - `p` = Portuguese (Brazilian)
 - `z` = Chinese (Mandarin)
 
-## Acknowledgments
+## Architecture
 
-- Built using [Ollama](https://ollama.ai/), [Kokoro](https://github.com/hexgrad/kokoro), and the [Pexels API](https://www.pexels.com/api/).
+```
+PDF → Text Extraction → LLM Script Generation → TTS Audio
+                                                    ↓
+                              ┌────────────────────┴────────────────────┐
+                              ↓                                         ↓
+                      Pexels Videos                              AI Slides
+                      (Download)                               (Generate)
+                              ↓                                         ↓
+                              └────────────────────┬────────────────────┘
+                                                       ↓
+                                                 MoviePy
+                                                    ↓
+                                              Final Video
+```
+
+## Dependencies
+
+Built with:
+- [Ollama](https://ollama.ai/) - Local LLM inference
+- [Kokoro](https://github.com/hexgrad/kokoro) - Text-to-Speech
+- [Pexels API](https://www.pexels.com/api/) - Stock videos
+- [PyMuPDF](https://pymupdf.readthedocs.io/) - PDF processing
+- [MoviePy](https://zulko.github.io/moviepy/) - Video editing
+- [Pillow](https://pillow.readthedocs.io/) - Image generation
+- [CairoSVG](https://cairosvg.org/) - SVG rendering
+- [PyQt6](https://www.qt.io/qt-for-python) - Graphical interface
