@@ -279,15 +279,18 @@ class PipelineWorker(QThread):
         # ── Step 2c: Generate slide content (if using slides) ──
         if visual_source != VISUAL_PEXELS:
             self.log_msg.emit("Generating slide content...", "INFO")
+            use_icons = visual_source == "slides_svg"
             for scene in script.scenes:
                 if self._cancel:
                     return
-                title, content = generate_slide_content(
-                    scene, cfg["model"], get_language_label(cfg.get("lang_code", "a"))
+                title, content, icon = generate_slide_content(
+                    scene, cfg["model"], get_language_label(cfg.get("lang_code", "a")),
+                    use_icons=use_icons
                 )
                 scene.slide_title = title
                 scene.slide_content = content
-                self.log_msg.emit(f"  Slide {scene.number}: {title[:40]}...", "INFO")
+                scene.slide_icon = icon
+                self.log_msg.emit(f"  Slide {scene.number}: {title[:40]}... (icon: {icon})", "INFO")
 
         # ── Steps 3–4: Process scenes ──
         audio_engine = AudioEngine(voice=cfg["voice"], speed=cfg["speed"],
@@ -410,17 +413,29 @@ class PipelineWorker(QThread):
         scene.video_path = raw_path
 
     def _process_slide_simple_scene_gui(self, scene, duration, slide_dir, slide_theme):
-        """Renders a simple slide for a scene in GUI worker."""
+        """Renders a slide with icon for a scene in GUI worker."""
         from freevi import render_slide_image
-        self.log_msg.emit(f"  Rendering simple slide...", "INFO")
+        from icon_manager import load_and_recolor_icon
+        self.log_msg.emit(f"  Rendering slide with icon...", "INFO")
+
+        icon_svg = None
+        if scene.slide_icon and scene.slide_icon != "none":
+            icon_svg = load_and_recolor_icon(
+                scene.slide_icon, slide_theme["accent_primary"]
+            )
+            if icon_svg:
+                self.log_msg.emit(f"  Using icon: {scene.slide_icon}", "INFO")
+
         scene.slide_image_path = render_slide_image(
-            scene, slide_theme, slide_dir, svg_illustration=None
+            scene, slide_theme, slide_dir, 
+            svg_illustration=None, icon_svg=icon_svg
         )
 
     def _process_slide_svg_scene_gui(self, scene, duration, cfg, slide_dir, slide_theme):
-        """Renders a slide with SVG illustration for a scene in GUI worker."""
+        """Renders a slide with SVG illustration and icon for a scene in GUI worker."""
         from freevi import render_slide_image
         from slide_svg_generator import generate_svg_illustration
+        from icon_manager import load_and_recolor_icon
         self.log_msg.emit(f"  Generating SVG illustration...", "INFO")
         svg_illustration = generate_svg_illustration(
             scene_text=scene.narrator_text,
@@ -429,8 +444,18 @@ class PipelineWorker(QThread):
             color_secondary=slide_theme["accent_primary"],
             color_accent=slide_theme["accent_secondary"],
         )
+
+        icon_svg = None
+        if scene.slide_icon and scene.slide_icon != "none":
+            icon_svg = load_and_recolor_icon(
+                scene.slide_icon, slide_theme["accent_secondary"]
+            )
+            if icon_svg:
+                self.log_msg.emit(f"  Using icon: {scene.slide_icon}", "INFO")
+
         scene.slide_image_path = render_slide_image(
-            scene, slide_theme, slide_dir, svg_illustration=svg_illustration
+            scene, slide_theme, slide_dir, 
+            svg_illustration=svg_illustration, icon_svg=icon_svg
         )
 
 

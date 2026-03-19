@@ -181,12 +181,51 @@ class SlideRenderer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    def _render_icon(self, img: Image.Image, icon_svg: str, x: float, size: float):
+        """Render an icon SVG centered in the right portion of the slide."""
+        try:
+            import cairosvg
+            svg_bytes = icon_svg.encode("utf-8")
+            icon_png = cairosvg.svg2png(
+                bytestring=svg_bytes,
+                output_width=int(size),
+                output_height=int(size),
+            )
+            icon_img = Image.open(io.BytesIO(icon_png)).convert("RGBA")
+
+            icon_x = int(x + (size - icon_img.width) // 2)
+            icon_y = int((TARGET_HEIGHT - icon_img.height) // 2)
+
+            img.paste(icon_img, (icon_x, icon_y), icon_img)
+        except Exception as e:
+            log.warning(f"Failed to render icon: {e}")
+
+    def _render_svg_illustration(self, img: Image.Image, svg: str, x: float, size: float):
+        """Render an abstract SVG illustration in the right portion of the slide."""
+        try:
+            import cairosvg
+            svg_bytes = svg.encode("utf-8")
+            ill_png = cairosvg.svg2png(
+                bytestring=svg_bytes,
+                output_width=int(size),
+                output_height=int(size),
+            )
+            ill_img = Image.open(io.BytesIO(ill_png)).convert("RGBA")
+
+            ill_x = int(x + (size - ill_img.width) // 2)
+            ill_y = int((TARGET_HEIGHT - ill_img.height) // 2)
+
+            img.paste(ill_img, (ill_x, ill_y), ill_img)
+        except Exception as e:
+            log.warning(f"Failed to render illustration SVG: {e}")
+
     def render_slide(
         self,
         scene_num: int,
         title: str,
         content: list[str],
         svg_illustration: Optional[str] = None,
+        icon_svg: Optional[str] = None,
     ) -> str:
         """
         Renders a single slide as a PNG file.
@@ -195,7 +234,8 @@ class SlideRenderer:
             scene_num: Scene number for decorative variation.
             title: Slide title (short, max ~6 words).
             content: List of bullet points (1-3 items, each max ~10 words).
-            svg_illustration: Optional SVG string for right-side illustration.
+            svg_illustration: Optional abstract SVG string for right-side illustration.
+            icon_svg: Optional icon SVG string (from icon library).
 
         Returns:
             Path to the rendered PNG file.
@@ -223,7 +263,8 @@ class SlideRenderer:
         padding_y = 100
         content_start_y = 280
 
-        if svg_illustration:
+        has_right_content = svg_illustration or icon_svg
+        if has_right_content:
             content_width = TARGET_WIDTH * 0.5
             svg_x = TARGET_WIDTH * 0.55
             svg_size = int(TARGET_WIDTH * 0.35)
@@ -270,23 +311,10 @@ class SlideRenderer:
 
             y_offset += 20
 
-        if svg_illustration:
-            try:
-                import cairosvg
-                svg_bytes = svg_illustration.encode("utf-8")
-                ill_png = cairosvg.svg2png(
-                    bytestring=svg_bytes,
-                    output_width=int(svg_size),
-                    output_height=int(svg_size),
-                )
-                ill_img = Image.open(io.BytesIO(ill_png)).convert("RGBA")
-
-                ill_x = int(svg_x + (svg_size - ill_img.width) // 2)
-                ill_y = int((TARGET_HEIGHT - ill_img.height) // 2)
-
-                img.paste(ill_img, (ill_x, ill_y), ill_img)
-            except Exception as e:
-                log.warning(f"Failed to render illustration SVG: {e}")
+        if icon_svg:
+            self._render_icon(img, icon_svg, svg_x, svg_size)
+        elif svg_illustration:
+            self._render_svg_illustration(img, svg_illustration, svg_x, svg_size)
 
         output_path = self.output_dir / f"slide_{scene_num:02d}.png"
         img_rgb = Image.new("RGB", img.size, (0, 0, 0))

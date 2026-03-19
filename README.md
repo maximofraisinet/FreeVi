@@ -15,8 +15,9 @@ FreeVi transforms PDF documents into dynamic audiovisual narratives. Choose betw
 - **PDF to Video:** Convert PDF text into engaging audiovisual content.
 - **Multiple Visual Sources:** Choose between stock videos or AI-generated slides.
   - **Pexels Videos:** Automatic background video clips.
-  - **AI Slides (Simple):** Clean, themed presentations with text.
-  - **AI Slides (with SVG):** Presentations with AI-generated geometric illustrations.
+  - **AI Slides (Simple):** Clean, themed presentations with text and icons.
+  - **AI Slides (with SVG):** Presentations with AI-generated geometric illustrations and icons.
+- **Smart Icon Selection:** 6,000+ icons from Tabler Icons, automatically selected based on content.
 - **Smart Processing:** Local LLM (Ollama) adapts text into natural narration scripts.
 - **Natural Voices:** Multilingual TTS using Kokoro ONNX.
 - **Customizable Themes:** Tokyo Night, Executive, and Minimal slide themes.
@@ -99,8 +100,8 @@ python freevi.py document.pdf --visual-source slides_svg --slide-theme tokyo_nig
 | Option | Description | Time |
 |--------|-------------|------|
 | `pexels` | Stock videos from Pexels API | Fast |
-| `slides_simple` | Themed slides with text only | Medium |
-| `slides_svg` | Themed slides with AI-generated SVG illustrations | Slower |
+| `slides_simple` | Themed slides with text and icons | Medium |
+| `slides_svg` | Themed slides with AI-generated SVG illustrations and icons | Slower |
 
 ### Available Slide Themes
 
@@ -134,9 +135,9 @@ PDF → Text Extraction → LLM Script Generation → TTS Audio
                               ↓                                         ↓
                               └────────────────────┬────────────────────┘
                                                        ↓
-                                                 MoviePy
-                                                    ↓
-                                              Final Video
+                                                  MoviePy
+                                                     ↓
+                                               Final Video
 ```
 
 ## Dependencies
@@ -150,3 +151,22 @@ Built with:
 - [Pillow](https://pillow.readthedocs.io/) - Image generation
 - [CairoSVG](https://cairosvg.org/) - SVG rendering
 - [PyQt6](https://www.qt.io/qt-for-python) - Graphical interface
+- [Tabler Icons](https://tabler-icons.io/) - Icon library (SVG)
+
+## Credits
+
+### Icons
+
+The icon library included in this project uses **Tabler Icons**, licensed under the [MIT License](https://github.com/tabler/tabler-icons/blob/master/LICENSE).
+
+Tabler Icons is an open-source SVG icon library by [Tabler](https://tabler.io/). The icons are automatically recolored to match the selected slide theme during video generation.
+
+### Other Assets
+
+- **Stock Videos:** Videos are sourced from [Pexels](https://www.pexels.com/) and require attribution according to [Pexels License](https://www.pexels.com/license/).
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+Icons are property of their respective owners and are used here under their respective open-source licenses.

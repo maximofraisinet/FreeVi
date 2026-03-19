@@ -168,6 +168,7 @@ class Scene:
     slide_title: str = ""
     slide_content: list = field(default_factory=list)
     slide_image_path: str = ""
+    slide_icon: str = ""
 
 
 @dataclass
@@ -1646,22 +1647,46 @@ def _concatenate_scenes_moviepy(scene_paths: list[str], final_path: str) -> str:
 # 5b. SLIDE GENERATION MODULE
 # ---------------------------------------------------------------------------
 
-def generate_slide_content(scene: Scene, llm_model: str, narration_language: str) -> tuple[str, list[str]]:
+def generate_slide_content(
+    scene: Scene, 
+    llm_model: str, 
+    narration_language: str,
+    use_icons: bool = True,
+) -> tuple[str, list[str], str]:
     """
-    Uses the LLM to extract slide title and content from a scene's narrator text.
+    Uses the LLM to extract slide title, content, and icon from a scene's narrator text.
 
     Args:
         scene: The scene containing narrator_text.
         llm_model: Ollama model to use.
         narration_language: Language for the prompt.
+        use_icons: Whether to include icon selection.
 
     Returns:
-        Tuple of (title, content_list) where content_list has 1-3 bullet points.
+        Tuple of (title, content_list, icon_name) where content_list has 1-3 bullet points.
     """
+    from icon_manager import get_icon_library
+
+    icon_list_text = ""
+    icon_prompt_part = ""
+
+    if use_icons:
+        lib = get_icon_library()
+        keywords = lib.extract_keywords(scene.narrator_text)
+        filtered = lib.filter_icons(keywords, max_icons=30)
+        icon_list_text = lib.format_icon_list(filtered)
+
+        icon_prompt_part = f"""
+4. Choose ONE icon filename from the list below that best represents the content.
+   If none are relevant, respond with "none".
+
+Available icons:
+{icon_list_text}"""
+
     slide_prompt = f"""\
 Based on the following narration text, extract a slide title and 1-3 key bullet points.
 The title should be short (max 6 words) and impactful.
-Each bullet should be concise (max 12 words).
+Each bullet should be concise (max 12 words).{icon_prompt_part}
 
 Narration text:
 {scene.narrator_text}
@@ -1669,7 +1694,7 @@ Narration text:
 Respond ONLY with valid JSON in this format:
 {{
   "title": "Short impactful title",
-  "content": ["First key point", "Second key point", "Third key point"]
+  "content": ["First key point", "Second key point", "Third key point"]{', "icon": "icon-name.svg"' if use_icons else ''}
 }}
 
 JSON:"""
@@ -1678,7 +1703,7 @@ JSON:"""
         response = ollama.generate(
             model=llm_model,
             prompt=slide_prompt,
-            options={"temperature": 0.3, "num_predict": 150},
+            options={"temperature": 0.3, "num_predict": 200},
         )
 
         import json
@@ -1688,15 +1713,16 @@ JSON:"""
         data = json.loads(text)
         title = data.get("title", "Slide")
         content = data.get("content", [])
+        icon = data.get("icon", "none") if use_icons else ""
 
-        return title[:80], content[:3]
+        return title[:80], content[:3], icon
 
     except Exception as e:
         log.warning(f"  [Slide] LLM extraction failed: {e}")
         words = scene.narrator_text.split()[:8]
         title = " ".join(words) + "..."
         content = [scene.narrator_text[:100] + "..."]
-        return title, content
+        return title, content, ""
 
 
 def render_slide_image(
@@ -1704,6 +1730,7 @@ def render_slide_image(
     theme: dict,
     slide_dir: str,
     svg_illustration: str | None = None,
+    icon_svg: str | None = None,
 ) -> str:
     """
     Renders a single slide image for a scene.
@@ -1713,6 +1740,7 @@ def render_slide_image(
         theme: Theme dictionary from slide_templates.
         slide_dir: Directory to save slide images.
         svg_illustration: Optional SVG string for illustration.
+        icon_svg: Optional icon SVG string.
 
     Returns:
         Path to the rendered PNG file.
@@ -1725,6 +1753,7 @@ def render_slide_image(
         title=scene.slide_title,
         content=scene.slide_content,
         svg_illustration=svg_illustration,
+        icon_svg=icon_svg,
     )
 
 
@@ -1856,13 +1885,15 @@ class VideoGenerator:
             log.info("=" * 60)
             log.info(f"STEP 2b/5: Extracting slide content...")
             log.info("=" * 60)
+            use_icons = self.visual_source == VISUAL_SLIDES_SVG
             for scene in script.scenes:
-                title, content = generate_slide_content(
-                    scene, self.llm_model, narration_lang
+                title, content, icon = generate_slide_content(
+                    scene, self.llm_model, narration_lang, use_icons=use_icons
                 )
                 scene.slide_title = title
                 scene.slide_content = content
-                log.info(f"  Slide {scene.number}: {title[:40]}...")
+                scene.slide_icon = icon
+                log.info(f"  Slide {scene.number}: {title[:40]}... (icon: {icon})")
 
         # ── Steps 3–4: Process each scene ──
         final_scene_paths = []
@@ -1961,16 +1992,29 @@ class VideoGenerator:
         scene.video_path = raw_video_path
 
     def _process_slide_simple_scene(self, scene, duration: float, slide_dir: str):
-        """Renders a simple slide (no SVG) for a scene."""
-        log.info(f"  [Slide] Rendering simple slide...")
+        """Renders a slide with icon from library for a scene."""
+        log.info(f"  [Slide] Rendering slide with icon...")
+        icon_svg = None
+        if scene.slide_icon and scene.slide_icon != "none":
+            from icon_manager import load_and_recolor_icon
+            icon_svg = load_and_recolor_icon(
+                scene.slide_icon, self.slide_theme["accent_primary"]
+            )
+            if icon_svg:
+                log.info(f"  [Slide] Using icon: {scene.slide_icon}")
+            else:
+                log.warning(f"  [Slide] Could not load icon: {scene.slide_icon}")
+
         scene.slide_image_path = render_slide_image(
-            scene, self.slide_theme, slide_dir, svg_illustration=None
+            scene, self.slide_theme, slide_dir, 
+            svg_illustration=None, icon_svg=icon_svg
         )
 
     def _process_slide_svg_scene(self, scene, duration: float, slide_dir: str):
-        """Renders a slide with AI-generated SVG illustration."""
-        log.info(f"  [Slide] Generating SVG illustration...")
+        """Renders a slide with AI-generated SVG illustration and optional icon."""
+        log.info(f"  [Slide] Generating slide with icon and SVG...")
         from slide_svg_generator import generate_svg_illustration
+        from icon_manager import load_and_recolor_icon
 
         svg_illustration = generate_svg_illustration(
             scene_text=scene.narrator_text,
@@ -1980,8 +2024,17 @@ class VideoGenerator:
             color_accent=self.slide_theme["accent_secondary"],
         )
 
+        icon_svg = None
+        if scene.slide_icon and scene.slide_icon != "none":
+            icon_svg = load_and_recolor_icon(
+                scene.slide_icon, self.slide_theme["accent_secondary"]
+            )
+            if icon_svg:
+                log.info(f"  [Slide] Using icon: {scene.slide_icon}")
+
         scene.slide_image_path = render_slide_image(
-            scene, self.slide_theme, slide_dir, svg_illustration=svg_illustration
+            scene, self.slide_theme, slide_dir, 
+            svg_illustration=svg_illustration, icon_svg=icon_svg
         )
 
     def _generate_black_video(self, duration: float, output_path: str) -> str:
