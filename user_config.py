@@ -42,6 +42,8 @@ DEFAULTS: dict = {
     # Empty string means "use the built-in DEFAULT_CUSTOM_INSTRUCTIONS from freevi.py"
     "custom_instructions": "",
     "lang_code":           "a",
+    "visual_source":       "pexels",
+    "slide_theme":         "tokyo_night",
 }
 
 
@@ -135,6 +137,8 @@ def save(config: dict) -> None:
         "open_when_done":      config.get("open_when_done",      DEFAULTS["open_when_done"]),
         "custom_instructions": config.get("custom_instructions", DEFAULTS["custom_instructions"]),
         "lang_code":           config.get("lang_code",           DEFAULTS["lang_code"]),
+        "visual_source":       config.get("visual_source",      DEFAULTS["visual_source"]),
+        "slide_theme":         config.get("slide_theme",        DEFAULTS["slide_theme"]),
     }
     _write(_config_path(), to_save)
 
@@ -170,4 +174,12 @@ def save_from_panel(panel) -> None:
         "custom_instructions": panel.txt_prompt.toPlainText(),
         "lang_code":           panel.combo_language.currentData(),
     }
+
+    visual_idx = panel.combo_visual_source.currentIndex()
+    visual_map = {0: "pexels", 1: "slides_simple", 2: "slides_svg"}
+    raw["visual_source"] = visual_map.get(visual_idx, "pexels")
+
+    theme_map = {"Tokyo Night": "tokyo_night", "Executive": "executive", "Minimal": "minimal"}
+    raw["slide_theme"] = theme_map.get(panel.combo_slide_theme.currentText(), "tokyo_night")
+
     save(raw)

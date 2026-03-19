@@ -26,6 +26,10 @@ requests>=2.31.0
 # Video editing and assembly (MoviePy 2.x)
 moviepy>=2.0.0
 
+# AI Slide Generation
+Pillow>=10.0.0
+cairosvg>=2.5.0
+
 # GUI (optional — only needed to run freevi_gui.py)
 PyQt6>=6.6.0
 
@@ -38,3 +42,7 @@ PyQt6>=6.6.0
 #     Ubuntu/Debian: sudo apt install espeak-ng
 #     macOS:         brew install espeak-ng
 #     Arch:          sudo pacman -S espeak-ng
+# - cairo (required by cairosvg):
+#     Ubuntu/Debian: sudo apt install libcairo2 libcairo2-dev
+#     macOS:         brew install cairo
+#     Arch:          sudo pacman -S cairo

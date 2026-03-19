@@ -40,6 +40,13 @@ TARGET_HEIGHT = 1080
 TARGET_FPS = 24
 TARGET_PRESET = "medium"  # x264 encoding preset
 
+# Visual source options
+VISUAL_PEXELS = "pexels"
+VISUAL_SLIDES_SIMPLE = "slides_simple"
+VISUAL_SLIDES_SVG = "slides_svg"
+
+VISUAL_OPTIONS = [VISUAL_PEXELS, VISUAL_SLIDES_SIMPLE, VISUAL_SLIDES_SVG]
+
 # Directory where Kokoro models are stored (relative to this script)
 _env_kokoro = os.environ.get("KOKORO_MODEL_DIR", "")
 if _env_kokoro:
@@ -158,6 +165,9 @@ class Scene:
     audio_duration: float = 0.0
     video_path: str = ""
     processed_video_path: str = ""
+    slide_title: str = ""
+    slide_content: list = field(default_factory=list)
+    slide_image_path: str = ""
 
 
 @dataclass
@@ -1633,6 +1643,134 @@ def _concatenate_scenes_moviepy(scene_paths: list[str], final_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 5b. SLIDE GENERATION MODULE
+# ---------------------------------------------------------------------------
+
+def generate_slide_content(scene: Scene, llm_model: str, narration_language: str) -> tuple[str, list[str]]:
+    """
+    Uses the LLM to extract slide title and content from a scene's narrator text.
+
+    Args:
+        scene: The scene containing narrator_text.
+        llm_model: Ollama model to use.
+        narration_language: Language for the prompt.
+
+    Returns:
+        Tuple of (title, content_list) where content_list has 1-3 bullet points.
+    """
+    slide_prompt = f"""\
+Based on the following narration text, extract a slide title and 1-3 key bullet points.
+The title should be short (max 6 words) and impactful.
+Each bullet should be concise (max 12 words).
+
+Narration text:
+{scene.narrator_text}
+
+Respond ONLY with valid JSON in this format:
+{{
+  "title": "Short impactful title",
+  "content": ["First key point", "Second key point", "Third key point"]
+}}
+
+JSON:"""
+
+    try:
+        response = ollama.generate(
+            model=llm_model,
+            prompt=slide_prompt,
+            options={"temperature": 0.3, "num_predict": 150},
+        )
+
+        import json
+        text = response["response"].strip()
+        text = text.strip("```json").strip("```").strip()
+
+        data = json.loads(text)
+        title = data.get("title", "Slide")
+        content = data.get("content", [])
+
+        return title[:80], content[:3]
+
+    except Exception as e:
+        log.warning(f"  [Slide] LLM extraction failed: {e}")
+        words = scene.narrator_text.split()[:8]
+        title = " ".join(words) + "..."
+        content = [scene.narrator_text[:100] + "..."]
+        return title, content
+
+
+def render_slide_image(
+    scene: Scene,
+    theme: dict,
+    slide_dir: str,
+    svg_illustration: str | None = None,
+) -> str:
+    """
+    Renders a single slide image for a scene.
+
+    Args:
+        scene: Scene with slide_title and slide_content.
+        theme: Theme dictionary from slide_templates.
+        slide_dir: Directory to save slide images.
+        svg_illustration: Optional SVG string for illustration.
+
+    Returns:
+        Path to the rendered PNG file.
+    """
+    from slide_renderer import SlideRenderer
+
+    renderer = SlideRenderer(theme, slide_dir)
+    return renderer.render_slide(
+        scene_num=scene.number,
+        title=scene.slide_title,
+        content=scene.slide_content,
+        svg_illustration=svg_illustration,
+    )
+
+
+def assemble_slide_scene(
+    slide_image_path: str,
+    audio_path: str,
+    duration: float,
+    output_path: str,
+) -> str:
+    """
+    Creates a video clip from a slide image and audio file.
+
+    Args:
+        slide_image_path: Path to the slide PNG.
+        audio_path: Path to the audio WAV.
+        duration: Duration in seconds (from audio).
+        output_path: Output video path.
+
+    Returns:
+        Path to the assembled video.
+    """
+    from moviepy import AudioFileClip, ImageClip, concatenate_videoclips
+
+    img_clip = ImageClip(slide_image_path).with_duration(duration)
+    audio = AudioFileClip(audio_path)
+
+    img_clip = img_clip.with_audio(audio)
+    img_clip = img_clip.resized(new_size=(TARGET_WIDTH, TARGET_HEIGHT))
+    img_clip = img_clip.with_fps(TARGET_FPS)
+
+    img_clip.write_videofile(
+        output_path,
+        codec="libx264",
+        audio_codec="aac",
+        preset=TARGET_PRESET,
+        logger=None,
+    )
+
+    audio.close()
+    img_clip.close()
+
+    log.info(f"  Slide scene assembled: {output_path}")
+    return output_path
+
+
+# ---------------------------------------------------------------------------
 # 6. MAIN ORCHESTRATOR
 # ---------------------------------------------------------------------------
 class VideoGenerator:
@@ -1642,8 +1780,8 @@ class VideoGenerator:
     Per-scene pipeline (strict order for synchronization):
       1. LLM generates narrator text + visual query
       2. Kokoro generates audio → exact duration is measured
-      3. Pexels downloads video → trimmed/looped to that duration
-      4. MoviePy combines audio + video
+      3. Visual content: Pexels video OR slides (based on visual_source)
+      4. MoviePy combines audio + visual
       5. All scenes are concatenated at the end
     """
 
@@ -1658,6 +1796,8 @@ class VideoGenerator:
         chunk_size: int = 4096,
         lang_code: str = "a",
         orientation: str = "landscape",
+        visual_source: str = VISUAL_PEXELS,
+        slide_theme: str = "tokyo_night",
     ):
         self.pdf_path = pdf_path
         self.llm_model = llm_model
@@ -1666,10 +1806,19 @@ class VideoGenerator:
         self.chunk_size = chunk_size
         self.lang_code = lang_code
         self.orientation = orientation
+        self.visual_source = visual_source
+        self.slide_theme_name = slide_theme
         self.audio_engine = AudioEngine(
             voice=voice, speed=voice_speed, lang_code=lang_code,
         )
-        self.pexels_api_key = get_pexels_api_key()
+
+        if visual_source == VISUAL_PEXELS:
+            self.pexels_api_key = get_pexels_api_key()
+        else:
+            from slide_templates import get_theme
+            self.slide_theme = get_theme(slide_theme).to_dict()
+            log.info(f"Slide theme: {slide_theme}")
+
         self.temp_dir = tempfile.mkdtemp(prefix="freevi_")
         log.info(f"Temporary directory: {self.temp_dir}")
 
@@ -1702,9 +1851,25 @@ class VideoGenerator:
                 f"{scene.narrator_text[:60]}..."
             )
 
+        # ── Step 2b: Generate slide content if needed ──
+        if self.visual_source != VISUAL_PEXELS:
+            log.info("=" * 60)
+            log.info(f"STEP 2b/5: Extracting slide content...")
+            log.info("=" * 60)
+            for scene in script.scenes:
+                title, content = generate_slide_content(
+                    scene, self.llm_model, narration_lang
+                )
+                scene.slide_title = title
+                scene.slide_content = content
+                log.info(f"  Slide {scene.number}: {title[:40]}...")
+
         # ── Steps 3–4: Process each scene ──
         final_scene_paths = []
-        used_video_urls: set[str] = set()   # prevents reusing the same Pexels clip
+        used_video_urls: set[str] = set()
+
+        slide_dir = os.path.join(self.temp_dir, "slides")
+        os.makedirs(slide_dir, exist_ok=True)
 
         for scene in script.scenes:
             log.info("=" * 60)
@@ -1721,39 +1886,30 @@ class VideoGenerator:
             scene.audio_duration = duration
             log.info(f"  [Audio] Exact duration: {duration:.3f} seconds")
 
-            # ── 3b: Download stock video ──
-            log.info(f"  [Video] Searching '{scene.video_query}' on Pexels...")
-            raw_video_path = os.path.join(
-                self.temp_dir, f"scene_{scene.number:02d}_raw.mp4"
-            )
-            success = search_and_download_video(
-                scene.video_query,
-                self.pexels_api_key,
-                raw_video_path,
-                orientation=self.orientation,
-                target_duration=duration,
-                used_urls=used_video_urls,
-            )
+            # ── 3b: Visual content based on visual_source ──
+            if self.visual_source == VISUAL_PEXELS:
+                self._process_pexels_scene(scene, duration, used_video_urls)
+            elif self.visual_source == VISUAL_SLIDES_SVG:
+                self._process_slide_svg_scene(scene, duration, slide_dir)
+            else:
+                self._process_slide_simple_scene(scene, duration, slide_dir)
 
-            if not success:
-                log.error(
-                    f"  Could not get video for scene {scene.number}. "
-                    f"Generating black fallback video."
-                )
-                raw_video_path = self._generate_black_video(duration, raw_video_path)
-
-            scene.video_path = raw_video_path
-
-            # ── 3c: Fit video + mix audio in a single encode pass ──
+            # ── 3c: Fit visual + mix audio in a single encode pass ──
             log.info(f"  [Assembly] Encoding video + audio in one pass...")
             scene_final_path = os.path.join(
                 self.temp_dir, f"scene_{scene.number:02d}_final.mp4"
             )
-            assemble_scene_from_raw(
-                raw_video_path, audio_path, duration, scene_final_path
-            )
-            final_scene_paths.append(scene_final_path)
 
+            if self.visual_source == VISUAL_PEXELS:
+                assemble_scene_from_raw(
+                    scene.video_path, audio_path, duration, scene_final_path
+                )
+            else:
+                assemble_slide_scene(
+                    scene.slide_image_path, audio_path, duration, scene_final_path
+                )
+
+            final_scene_paths.append(scene_final_path)
             log.info(f"  Scene {scene.number} complete.")
 
         # ── Step 5: Concatenate all scenes ──
@@ -1761,13 +1917,11 @@ class VideoGenerator:
         log.info("STEP 5/5: Concatenating all scenes...")
         log.info("=" * 60)
 
-        # Ensure output directory exists
         output_dir = os.path.dirname(self.output_path)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
 
         if len(final_scene_paths) == 1:
-            # Only one scene: copy directly
             import shutil
             shutil.copy2(final_scene_paths[0], self.output_path)
         else:
@@ -1779,6 +1933,56 @@ class VideoGenerator:
         log.info("=" * 60)
 
         return self.output_path
+
+    def _process_pexels_scene(
+        self, scene, duration: float, used_video_urls: set
+    ):
+        """Downloads and processes Pexels video for a scene."""
+        log.info(f"  [Video] Searching '{scene.video_query}' on Pexels...")
+        raw_video_path = os.path.join(
+            self.temp_dir, f"scene_{scene.number:02d}_raw.mp4"
+        )
+        success = search_and_download_video(
+            scene.video_query,
+            self.pexels_api_key,
+            raw_video_path,
+            orientation=self.orientation,
+            target_duration=duration,
+            used_urls=used_video_urls,
+        )
+
+        if not success:
+            log.error(
+                f"  Could not get video for scene {scene.number}. "
+                f"Generating black fallback video."
+            )
+            raw_video_path = self._generate_black_video(duration, raw_video_path)
+
+        scene.video_path = raw_video_path
+
+    def _process_slide_simple_scene(self, scene, duration: float, slide_dir: str):
+        """Renders a simple slide (no SVG) for a scene."""
+        log.info(f"  [Slide] Rendering simple slide...")
+        scene.slide_image_path = render_slide_image(
+            scene, self.slide_theme, slide_dir, svg_illustration=None
+        )
+
+    def _process_slide_svg_scene(self, scene, duration: float, slide_dir: str):
+        """Renders a slide with AI-generated SVG illustration."""
+        log.info(f"  [Slide] Generating SVG illustration...")
+        from slide_svg_generator import generate_svg_illustration
+
+        svg_illustration = generate_svg_illustration(
+            scene_text=scene.narrator_text,
+            llm_model=self.llm_model,
+            color_primary=self.slide_theme["background"],
+            color_secondary=self.slide_theme["accent_primary"],
+            color_accent=self.slide_theme["accent_secondary"],
+        )
+
+        scene.slide_image_path = render_slide_image(
+            scene, self.slide_theme, slide_dir, svg_illustration=svg_illustration
+        )
 
     def _generate_black_video(self, duration: float, output_path: str) -> str:
         """Generates a black video as fallback when Pexels fails."""
@@ -1873,6 +2077,18 @@ Prerequisites:
         help="PDF chunk size in tokens per LLM call (default: 4096). "
              "The context window is derived automatically from this value.",
     )
+    parser.add_argument(
+        "--visual-source",
+        default=VISUAL_PEXELS,
+        choices=VISUAL_OPTIONS,
+        help="Visual source: pexels (default), slides_simple, slides_svg",
+    )
+    parser.add_argument(
+        "--slide-theme",
+        default="tokyo_night",
+        choices=["tokyo_night", "executive", "minimal"],
+        help="Slide theme when using slides (default: tokyo_night)",
+    )
 
     args = parser.parse_args()
 
@@ -1886,6 +2102,9 @@ Prerequisites:
     log.info(f"  Speed:        {args.speed}")
     log.info(f"  Max scenes:   {args.max_scenes}")
     log.info(f"  Chunk size:   {args.chunk_size} tokens")
+    log.info(f"  Visual:       {args.visual_source}")
+    if args.visual_source != VISUAL_PEXELS:
+        log.info(f"  Slide theme:  {args.slide_theme}")
     log.info(f"  Output:       {args.output}")
     log.info("=" * 60)
 
@@ -1899,6 +2118,8 @@ Prerequisites:
             max_scenes=args.max_scenes,
             chunk_size=args.chunk_size,
             lang_code=args.lang,
+            visual_source=args.visual_source,
+            slide_theme=args.slide_theme,
         )
         final_path = generator.run()
         log.info(f"\nVideo generated successfully: {final_path}")

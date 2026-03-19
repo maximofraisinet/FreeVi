@@ -204,17 +204,26 @@ class PipelineWorker(QThread):
         """Runs the full pipeline step by step."""
         from freevi import (
             AudioEngine,
-            VideoGenerator,
             assemble_scene_from_raw,
+            assemble_slide_scene,
             concatenate_scenes,
             extract_pdf_text,
             generate_script,
+            generate_slide_content,
             get_language_label,
+            render_slide_image,
             search_and_download_video,
+            VISUAL_PEXELS,
+            VISUAL_SLIDES_SIMPLE,
+            VISUAL_SLIDES_SVG,
         )
+        from slide_templates import get_theme
+        from slide_svg_generator import generate_svg_illustration
         import tempfile, shutil, os
 
         cfg = self.config
+        visual_source = cfg.get("visual_source", "pexels")
+        slide_theme = get_theme(cfg.get("slide_theme", "tokyo_night")).to_dict()
 
         # ── Step 1: Extract PDF text ──
         self.progress.emit(5, "Extracting text from PDF...")
@@ -250,33 +259,48 @@ class PipelineWorker(QThread):
             return
         self.log_msg.emit(f"Script generated: {len(script.scenes)} scenes", "INFO")
 
-        # ── Step 2b: Pause for user review of video queries ──
-        # Emit the scene list to the main thread, then block until the user
-        # confirms (or cancels) the ScriptReviewDialog.
+        # ── Step 2b: Pause for user review of video queries (only for Pexels) ──
         self.progress.emit(18, "Waiting for script review...")
         self._mutex.lock()
         self._reviewed_queries = None
-        self.script_ready.emit(script.scenes)   # triggers dialog in main thread
-        self._wait.wait(self._mutex)             # blocks here until resume() or cancel()
+        self.script_ready.emit(script.scenes)
+        self._wait.wait(self._mutex)
         reviewed = self._reviewed_queries
         self._mutex.unlock()
 
         if self._cancel or reviewed is None:
             return
 
-        # Apply the (possibly edited) queries back to the scenes
         for scene, new_query in zip(script.scenes, reviewed):
             q = new_query.strip()
             if q:
                 scene.video_query = " ".join(q.split()[:5])
 
+        # ── Step 2c: Generate slide content (if using slides) ──
+        if visual_source != VISUAL_PEXELS:
+            self.log_msg.emit("Generating slide content...", "INFO")
+            for scene in script.scenes:
+                if self._cancel:
+                    return
+                title, content = generate_slide_content(
+                    scene, cfg["model"], get_language_label(cfg.get("lang_code", "a"))
+                )
+                scene.slide_title = title
+                scene.slide_content = content
+                self.log_msg.emit(f"  Slide {scene.number}: {title[:40]}...", "INFO")
+
         # ── Steps 3–4: Process scenes ──
         audio_engine = AudioEngine(voice=cfg["voice"], speed=cfg["speed"],
                                     lang_code=cfg.get("lang_code", "a"))
-        pexels_key = cfg["pexels_key"]
+        pexels_key = cfg.get("pexels_key", "")
         temp_dir = tempfile.mkdtemp(prefix="freevi_")
         final_paths = []
-        used_video_urls: set[str] = set()   # prevents reusing the same Pexels clip
+        used_video_urls: set[str] = set()
+        slide_dir = ""
+
+        if visual_source != VISUAL_PEXELS:
+            slide_dir = os.path.join(temp_dir, "slides")
+            os.makedirs(slide_dir, exist_ok=True)
 
         total_scenes = len(script.scenes)
         base_progress = 20
@@ -305,46 +329,35 @@ class PipelineWorker(QThread):
             if self._cancel:
                 return
 
-            # Stock video
-            self.progress.emit(
-                base_progress + (num - 1) * progress_per_scene + progress_per_scene // 2,
-                f"Scene {num}/{total_scenes}: downloading video...",
-            )
-            raw_path = os.path.join(temp_dir, f"scene_{num:02d}_raw.mp4")
-            success = search_and_download_video(
-                scene.video_query,
-                pexels_key,
-                raw_path,
-                orientation=cfg.get("orientation", "landscape"),
-                target_duration=duration,
-                used_urls=used_video_urls,
-            )
-            if not success:
-                self.log_msg.emit(
-                    f"  Pexels failed for '{scene.video_query}', using black fallback",
-                    "WARNING",
+            # Visual content
+            if visual_source == VISUAL_PEXELS:
+                self._process_pexels_scene_gui(
+                    scene, duration, pexels_key, cfg, temp_dir, used_video_urls
                 )
-                import freevi
-                from moviepy import ColorClip
-                clip = ColorClip(
-                    size=(freevi.TARGET_WIDTH, freevi.TARGET_HEIGHT),
-                    color=(0, 0, 0),
-                    duration=duration,
+            elif visual_source == VISUAL_SLIDES_SVG:
+                self._process_slide_svg_scene_gui(
+                    scene, duration, cfg, slide_dir, slide_theme
                 )
-                clip = clip.with_fps(freevi.TARGET_FPS)
-                clip.write_videofile(raw_path, codec="libx264", audio=False, logger=None)
-                clip.close()
-            scene.video_path = raw_path
+            else:
+                self._process_slide_simple_scene_gui(
+                    scene, duration, slide_dir, slide_theme
+                )
+
             if self._cancel:
                 return
 
-            # Fit video + mix audio in a single encode pass
+            # Fit visual + mix audio in a single encode pass
             self.progress.emit(
                 base_progress + (num - 1) * progress_per_scene + progress_per_scene // 2,
                 f"Scene {num}/{total_scenes}: encoding video + audio...",
             )
             scene_path = os.path.join(temp_dir, f"scene_{num:02d}_final.mp4")
-            assemble_scene_from_raw(raw_path, audio_path, duration, scene_path)
+
+            if visual_source == VISUAL_PEXELS:
+                assemble_scene_from_raw(scene.video_path, audio_path, duration, scene_path)
+            else:
+                assemble_slide_scene(scene.slide_image_path, audio_path, duration, scene_path)
+
             final_paths.append(scene_path)
             self.log_msg.emit(f"  Scene {num} complete.", "INFO")
 
@@ -354,7 +367,6 @@ class PipelineWorker(QThread):
 
         output_path = cfg["output"]
 
-        # Ensure output directory exists
         output_dir = os.path.dirname(os.path.abspath(output_path))
         os.makedirs(output_dir, exist_ok=True)
 
@@ -366,6 +378,60 @@ class PipelineWorker(QThread):
         self.progress.emit(100, "Video generated!")
         self.log_msg.emit(f"Final video: {output_path}", "INFO")
         self.finished.emit(output_path)
+
+    def _process_pexels_scene_gui(self, scene, duration, pexels_key, cfg, temp_dir, used_video_urls):
+        """Downloads Pexels video for a scene in GUI worker."""
+        from freevi import search_and_download_video
+        import freevi
+        from moviepy import ColorClip
+
+        raw_path = os.path.join(temp_dir, f"scene_{scene.number:02d}_raw.mp4")
+        success = search_and_download_video(
+            scene.video_query,
+            pexels_key,
+            raw_path,
+            orientation=cfg.get("orientation", "landscape"),
+            target_duration=duration,
+            used_urls=used_video_urls,
+        )
+        if not success:
+            self.log_msg.emit(
+                f"  Pexels failed for '{scene.video_query}', using black fallback",
+                "WARNING",
+            )
+            clip = ColorClip(
+                size=(freevi.TARGET_WIDTH, freevi.TARGET_HEIGHT),
+                color=(0, 0, 0),
+                duration=duration,
+            )
+            clip = clip.with_fps(freevi.TARGET_FPS)
+            clip.write_videofile(raw_path, codec="libx264", audio=False, logger=None)
+            clip.close()
+        scene.video_path = raw_path
+
+    def _process_slide_simple_scene_gui(self, scene, duration, slide_dir, slide_theme):
+        """Renders a simple slide for a scene in GUI worker."""
+        from freevi import render_slide_image
+        self.log_msg.emit(f"  Rendering simple slide...", "INFO")
+        scene.slide_image_path = render_slide_image(
+            scene, slide_theme, slide_dir, svg_illustration=None
+        )
+
+    def _process_slide_svg_scene_gui(self, scene, duration, cfg, slide_dir, slide_theme):
+        """Renders a slide with SVG illustration for a scene in GUI worker."""
+        from freevi import render_slide_image
+        from slide_svg_generator import generate_svg_illustration
+        self.log_msg.emit(f"  Generating SVG illustration...", "INFO")
+        svg_illustration = generate_svg_illustration(
+            scene_text=scene.narrator_text,
+            llm_model=cfg["model"],
+            color_primary=slide_theme["background"],
+            color_secondary=slide_theme["accent_primary"],
+            color_accent=slide_theme["accent_secondary"],
+        )
+        scene.slide_image_path = render_slide_image(
+            scene, slide_theme, slide_dir, svg_illustration=svg_illustration
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +634,44 @@ class ConfigPanel(QWidget):
         lay_video.addWidget(QLabel("Orientation:"), 3, 0)
         lay_video.addWidget(self.combo_orientation, 3, 1)
         layout.addWidget(grp_video)
+
+        # ── 4b. Visual Source ──
+        grp_visual = QGroupBox("Visual Source")
+        grp_visual.setObjectName("groupbox")
+        lay_visual = QGridLayout(grp_visual)
+        lay_visual.setSpacing(8)
+
+        self.combo_visual_source = QComboBox()
+        self.combo_visual_source.addItems([
+            "Pexels (Stock Videos)",
+            "Slides (Simple)",
+            "Slides (with AI SVG)",
+        ])
+        self.combo_visual_source.setToolTip(
+            "Choose the visual source for the video:\n"
+            "  - Pexels: Stock videos from Pexels API\n"
+            "  - Slides (Simple): AI-generated slides with text only\n"
+            "  - Slides (with AI SVG): AI-generated slides with SVG illustrations"
+        )
+        self.combo_visual_source.currentIndexChanged.connect(self._on_visual_source_changed)
+
+        self.combo_slide_theme = QComboBox()
+        self.combo_slide_theme.addItems(["Tokyo Night", "Executive", "Minimal"])
+        self.combo_slide_theme.setToolTip("Visual theme for AI-generated slides")
+        self.combo_slide_theme.setVisible(False)
+
+        self.lbl_theme_warning = QLabel(
+            "Note: Slides with SVG takes longer (extra LLM call per scene)"
+        )
+        self.lbl_theme_warning.setStyleSheet("color: #565f89; font-size: 11px;")
+        self.lbl_theme_warning.setVisible(False)
+
+        lay_visual.addWidget(QLabel("Visual type:"), 0, 0)
+        lay_visual.addWidget(self.combo_visual_source, 0, 1)
+        lay_visual.addWidget(QLabel("Slide theme:"), 1, 0)
+        lay_visual.addWidget(self.combo_slide_theme, 1, 1)
+        lay_visual.addWidget(self.lbl_theme_warning, 2, 0, 1, 2)
+        layout.addWidget(grp_visual)
 
         # ── 5. API Keys ──
         grp_api = QGroupBox("API Keys")
@@ -804,14 +908,33 @@ class ConfigPanel(QWidget):
         if path:
             self.edit_output.setText(path)
 
+    def _on_visual_source_changed(self, index: int):
+        is_slides = index > 0
+        self.combo_slide_theme.setVisible(is_slides)
+        self.lbl_theme_warning.setVisible(index == 2)
+
     def get_config(self) -> dict | None:
         """Validates and returns the current configuration. Returns None on errors."""
         pdf = self.lbl_pdf.text()
         if pdf == "No file selected" or not Path(pdf).exists():
             return None
 
+        visual_source_map = {
+            0: "pexels",
+            1: "slides_simple",
+            2: "slides_svg",
+        }
+        visual_source = visual_source_map.get(self.combo_visual_source.currentIndex(), "pexels")
+
+        theme_map = {
+            "Tokyo Night": "tokyo_night",
+            "Executive": "executive",
+            "Minimal": "minimal",
+        }
+        slide_theme = theme_map.get(self.combo_slide_theme.currentText(), "tokyo_night")
+
         pexels_key = self.edit_pexels.text().strip()
-        if not pexels_key:
+        if visual_source == "pexels" and not pexels_key:
             return None
 
         res_map = {
@@ -837,6 +960,8 @@ class ConfigPanel(QWidget):
             "output": self.edit_output.text(),
             "open_when_done": self.chk_open_when_done.isChecked(),
             "custom_instructions": self.txt_prompt.toPlainText(),
+            "visual_source": visual_source,
+            "slide_theme": slide_theme,
         }
 
     def load_from_config(self, cfg: dict) -> None:
@@ -902,6 +1027,19 @@ class ConfigPanel(QWidget):
         # Custom prompt instructions
         self.txt_prompt.setPlainText(cfg.get("custom_instructions", ""))
 
+        # Visual source
+        visual_source_map = {"pexels": 0, "slides_simple": 1, "slides_svg": 2}
+        idx = visual_source_map.get(cfg.get("visual_source", "pexels"), 0)
+        self.combo_visual_source.setCurrentIndex(idx)
+        self._on_visual_source_changed(idx)
+
+        # Slide theme
+        theme_name_map = {"tokyo_night": "Tokyo Night", "executive": "Executive", "minimal": "Minimal"}
+        theme_name = theme_name_map.get(cfg.get("slide_theme", "tokyo_night"), "Tokyo Night")
+        idx = self.combo_slide_theme.findText(theme_name)
+        if idx >= 0:
+            self.combo_slide_theme.setCurrentIndex(idx)
+
     def validation_errors(self) -> list[str]:
         """Returns a list of validation errors."""
         errors = []
@@ -911,8 +1049,9 @@ class ConfigPanel(QWidget):
         elif not Path(pdf).exists():
             errors.append(f"PDF file does not exist: {pdf}")
 
-        if not self.edit_pexels.text().strip():
-            errors.append("Pexels API Key is required.")
+        visual_source_idx = self.combo_visual_source.currentIndex()
+        if visual_source_idx == 0 and not self.edit_pexels.text().strip():
+            errors.append("Pexels API Key is required when using Pexels videos.")
 
         if not self.edit_output.text().strip():
             errors.append("Specify an output path for the video.")
