@@ -612,7 +612,13 @@ class ConfigPanel(QWidget):
         lay_video.setSpacing(8)
 
         self.combo_res = QComboBox()
-        self.combo_res.addItems(["1920×1080 (Full HD)", "1280×720 (HD)", "3840×2160 (4K)"])
+        self.combo_res.addItems([
+            "1920×1080 (Full HD)",
+            "1080×1920 (Full HD Vertical)",
+            "1280×720 (HD)",
+            "720×1280 (HD Vertical)",
+            "3840×2160 (4K)",
+        ])
         self.combo_res.setToolTip("Output video resolution")
 
         self.combo_fps = QComboBox()
@@ -649,6 +655,22 @@ class ConfigPanel(QWidget):
         self.combo_orientation = QComboBox()
         self.combo_orientation.addItems(["landscape", "portrait", "square"])
         self.combo_orientation.setToolTip("Preferred orientation when searching videos on Pexels")
+
+        self._res_landscape = {
+            "1920×1080 (Full HD)": (1920, 1080),
+            "1280×720 (HD)": (1280, 720),
+            "3840×2160 (4K)": (3840, 2160),
+        }
+        self._res_portrait = {
+            "1080×1920 (Full HD Vertical)": (1080, 1920),
+            "720×1280 (HD Vertical)": (720, 1280),
+        }
+        self._res_square = {
+            "1080×1080 (Square HD)": (1080, 1080),
+            "720×720 (Square)": (720, 720),
+        }
+        self._current_res_map = self._res_landscape
+        self.combo_orientation.currentIndexChanged.connect(self._on_orientation_changed)
 
         lay_video.addWidget(QLabel("Resolution:"), 0, 0)
         lay_video.addWidget(self.combo_res, 0, 1)
@@ -835,9 +857,31 @@ class ConfigPanel(QWidget):
         if voices:
             self.combo_voice.addItems(voices)
         else:
-            # Fallback: show all voices (should not happen)
             self.combo_voice.addItems(self._all_voices)
         self.combo_voice.blockSignals(False)
+
+    def _on_orientation_changed(self):
+        """Updates resolution options based on selected orientation."""
+        orientation = self.combo_orientation.currentText()
+        if orientation == "portrait":
+            self._current_res_map = self._res_portrait
+            res_items = list(self._res_portrait.keys())
+        elif orientation == "square":
+            self._current_res_map = self._res_square
+            res_items = list(self._res_square.keys())
+        else:
+            self._current_res_map = self._res_landscape
+            res_items = list(self._res_landscape.keys())
+
+        self.combo_res.blockSignals(True)
+        current = self.combo_res.currentText()
+        self.combo_res.clear()
+        self.combo_res.addItems(res_items)
+        if current in self._current_res_map:
+            self.combo_res.setCurrentText(current)
+        else:
+            self.combo_res.setCurrentIndex(0)
+        self.combo_res.blockSignals(False)
 
     def _select_pdf(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -962,11 +1006,6 @@ class ConfigPanel(QWidget):
         if visual_source == "pexels" and not pexels_key:
             return None
 
-        res_map = {
-            "1920×1080 (Full HD)": (1920, 1080),
-            "1280×720 (HD)": (1280, 720),
-            "3840×2160 (4K)": (3840, 2160),
-        }
         fps_map = {"24 fps": 24, "30 fps": 30, "60 fps": 60}
 
         return {
@@ -977,7 +1016,7 @@ class ConfigPanel(QWidget):
             "speed": self.slider_speed.value() / 100.0,
             "max_scenes": self.spin_max_scenes.value(),
             "chunk_size": self.spin_chunk_size.value(),
-            "resolution": res_map[self.combo_res.currentText()],
+            "resolution": self._current_res_map[self.combo_res.currentText()],
             "fps": fps_map[self.combo_fps.currentText()],
             "preset": self.combo_preset.currentData() or "medium",
             "orientation": self.combo_orientation.currentText(),
@@ -1020,7 +1059,14 @@ class ConfigPanel(QWidget):
         # Speed (stored as int 50-200)
         self.slider_speed.setValue(int(cfg.get("speed", 100)))
 
-        # Resolution
+        # Orientation — must be set BEFORE resolution so _on_orientation_changed
+        # populates the correct resolution list first
+        idx = self.combo_orientation.findText(cfg.get("orientation", ""))
+        if idx >= 0:
+            self.combo_orientation.setCurrentIndex(idx)
+        self._on_orientation_changed()
+
+        # Resolution (now the combo has the correct options for the orientation)
         idx = self.combo_res.findText(cfg.get("resolution", ""))
         if idx >= 0:
             self.combo_res.setCurrentIndex(idx)
@@ -1036,11 +1082,6 @@ class ConfigPanel(QWidget):
             if self.combo_preset.itemData(i) == preset_val:
                 self.combo_preset.setCurrentIndex(i)
                 break
-
-        # Orientation
-        idx = self.combo_orientation.findText(cfg.get("orientation", ""))
-        if idx >= 0:
-            self.combo_orientation.setCurrentIndex(idx)
 
         # Output path
         if cfg.get("output"):

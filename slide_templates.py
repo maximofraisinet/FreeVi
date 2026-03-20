@@ -2,7 +2,7 @@
 slide_templates.py — Visual themes for AI-generated slide presentations
 ======================================================================
 Defines color palettes, typography, and decorative elements for each theme.
-All themes are designed for 1920x1080 output resolution.
+Themes are adaptive and work with any resolution or orientation (landscape/portrait).
 """
 
 from dataclasses import dataclass

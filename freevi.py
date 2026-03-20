@@ -1731,6 +1731,8 @@ def render_slide_image(
     slide_dir: str,
     svg_illustration: str | None = None,
     icon_svg: str | None = None,
+    width: int = TARGET_WIDTH,
+    height: int = TARGET_HEIGHT,
 ) -> str:
     """
     Renders a single slide image for a scene.
@@ -1741,13 +1743,15 @@ def render_slide_image(
         slide_dir: Directory to save slide images.
         svg_illustration: Optional SVG string for illustration.
         icon_svg: Optional icon SVG string.
+        width: Slide width (default: TARGET_WIDTH).
+        height: Slide height (default: TARGET_HEIGHT).
 
     Returns:
         Path to the rendered PNG file.
     """
     from slide_renderer import SlideRenderer
 
-    renderer = SlideRenderer(theme, slide_dir)
+    renderer = SlideRenderer(theme, slide_dir, width, height)
     return renderer.render_slide(
         scene_num=scene.number,
         title=scene.slide_title,
@@ -2007,7 +2011,8 @@ class VideoGenerator:
 
         scene.slide_image_path = render_slide_image(
             scene, self.slide_theme, slide_dir, 
-            svg_illustration=None, icon_svg=icon_svg
+            svg_illustration=None, icon_svg=icon_svg,
+            width=TARGET_WIDTH, height=TARGET_HEIGHT,
         )
 
     def _process_slide_svg_scene(self, scene, duration: float, slide_dir: str):
@@ -2034,7 +2039,8 @@ class VideoGenerator:
 
         scene.slide_image_path = render_slide_image(
             scene, self.slide_theme, slide_dir, 
-            svg_illustration=svg_illustration, icon_svg=icon_svg
+            svg_illustration=svg_illustration, icon_svg=icon_svg,
+            width=TARGET_WIDTH, height=TARGET_HEIGHT,
         )
 
     def _generate_black_video(self, duration: float, output_path: str) -> str:

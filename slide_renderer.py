@@ -2,7 +2,7 @@
 slide_renderer.py — Renders AI-generated slides as PNG images
 ============================================================
 Uses Pillow for image composition and cairosvg for SVG elements.
-Output resolution: 1920x1080.
+Output resolution: dynamically set based on orientation (default 1920x1080).
 """
 
 import io
@@ -17,8 +17,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 log = logging.getLogger("freevi.slides")
 
-TARGET_WIDTH = 1920
-TARGET_HEIGHT = 1080
+DEFAULT_WIDTH = 1920
+DEFAULT_HEIGHT = 1080
 
 FONT_CACHE: dict[str, ImageFont.FreeTypeFont] = {}
 
@@ -176,10 +176,13 @@ def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: Im
 class SlideRenderer:
     """Renders individual slide images for video generation."""
 
-    def __init__(self, theme: dict, output_dir: str):
+    def __init__(self, theme: dict, output_dir: str, width: int = DEFAULT_WIDTH, height: int = DEFAULT_HEIGHT):
         self.theme = theme
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.width = width
+        self.height = height
+        self.is_portrait = self.height > self.width
 
     def _render_icon(self, img: Image.Image, icon_svg: str, x: float, size: float):
         """Render an icon SVG centered in the right portion of the slide."""
@@ -194,7 +197,7 @@ class SlideRenderer:
             icon_img = Image.open(io.BytesIO(icon_png)).convert("RGBA")
 
             icon_x = int(x + (size - icon_img.width) // 2)
-            icon_y = int((TARGET_HEIGHT - icon_img.height) // 2)
+            icon_y = int((self.height - icon_img.height) // 2)
 
             img.paste(icon_img, (icon_x, icon_y), icon_img)
         except Exception as e:
@@ -213,7 +216,7 @@ class SlideRenderer:
             ill_img = Image.open(io.BytesIO(ill_png)).convert("RGBA")
 
             ill_x = int(x + (size - ill_img.width) // 2)
-            ill_y = int((TARGET_HEIGHT - ill_img.height) // 2)
+            ill_y = int((self.height - ill_img.height) // 2)
 
             img.paste(ill_img, (ill_x, ill_y), ill_img)
         except Exception as e:
@@ -241,37 +244,40 @@ class SlideRenderer:
             Path to the rendered PNG file.
         """
         img = _render_svg_to_image(
-            _create_decorative_svg(self.theme, TARGET_WIDTH, TARGET_HEIGHT, scene_num),
-            TARGET_WIDTH,
-            TARGET_HEIGHT,
+            _create_decorative_svg(self.theme, self.width, self.height, scene_num),
+            self.width,
+            self.height,
         )
         draw = ImageDraw.Draw(img)
 
-        title_font_size = 72
-        body_font_size = 36
-        bullet_font_size = 32
+        scale = self.width / 1920
+        title_font_size = max(int(72 * scale), 36)
+        bullet_font_size = max(int(32 * scale), 18)
 
         title_font = _get_system_font("sans-serif", title_font_size)
-        body_font = _get_system_font("sans-serif", body_font_size)
         bullet_font = _get_system_font("sans-serif", bullet_font_size)
 
         text_primary = _hex_to_rgb(self.theme["text_primary"])
-        text_secondary = _hex_to_rgb(self.theme["text_secondary"])
         accent = _hex_to_rgb(self.theme["accent_primary"])
 
-        padding_x = 120
-        padding_y = 100
-        content_start_y = 280
+        padding_x = int(120 * scale)
+        padding_y = int(100 * scale)
+        content_start_y = int(280 * scale)
 
-        has_right_content = svg_illustration or icon_svg
-        if has_right_content:
-            content_width = TARGET_WIDTH * 0.5
-            svg_x = TARGET_WIDTH * 0.55
-            svg_size = int(TARGET_WIDTH * 0.35)
-        else:
-            content_width = TARGET_WIDTH - (padding_x * 2)
+        if self.is_portrait:
             svg_x = 0
-            svg_size = 0
+            svg_size = int(self.width * 0.4)
+            content_width = self.width - (padding_x * 2)
+        else:
+            has_right_content = svg_illustration or icon_svg
+            if has_right_content:
+                content_width = self.width * 0.5
+                svg_x = self.width * 0.55
+                svg_size = int(self.width * 0.35)
+            else:
+                content_width = self.width - (padding_x * 2)
+                svg_x = 0
+                svg_size = 0
 
         bbox = draw.textbbox((0, 0), title, font=title_font)
         title_width = bbox[2] - bbox[0]
@@ -327,21 +333,25 @@ class SlideRenderer:
     def render_title_slide(self, title: str, subtitle: str = "") -> str:
         """Renders a title slide (used for intro)."""
         img = _render_svg_to_image(
-            _create_decorative_svg(self.theme, TARGET_WIDTH, TARGET_HEIGHT, 0),
-            TARGET_WIDTH,
-            TARGET_HEIGHT,
+            _create_decorative_svg(self.theme, self.width, self.height, 0),
+            self.width,
+            self.height,
         )
         draw = ImageDraw.Draw(img)
 
-        title_font = _get_system_font("sans-serif", 96)
-        subtitle_font = _get_system_font("sans-serif", 48)
+        scale = self.width / 1920
+        title_font_size = max(int(96 * scale), 48)
+        subtitle_font_size = max(int(48 * scale), 24)
+
+        title_font = _get_system_font("sans-serif", title_font_size)
+        subtitle_font = _get_system_font("sans-serif", subtitle_font_size)
 
         text_primary = _hex_to_rgb(self.theme["text_primary"])
         accent = _hex_to_rgb(self.theme["accent_primary"])
 
         bbox = draw.textbbox((0, 0), title, font=title_font)
-        title_x = (TARGET_WIDTH - (bbox[2] - bbox[0])) // 2
-        title_y = TARGET_HEIGHT // 2 - 80
+        title_x = (self.width - (bbox[2] - bbox[0])) // 2
+        title_y = self.height // 2 - int(80 * scale)
 
         draw.text(
             (title_x, title_y),
@@ -352,8 +362,8 @@ class SlideRenderer:
 
         if subtitle:
             bbox = draw.textbbox((0, 0), subtitle, font=subtitle_font)
-            sub_x = (TARGET_WIDTH - (bbox[2] - bbox[0])) // 2
-            sub_y = title_y + 140
+            sub_x = (self.width - (bbox[2] - bbox[0])) // 2
+            sub_y = title_y + int(140 * scale)
             draw.text(
                 (sub_x, sub_y),
                 subtitle,

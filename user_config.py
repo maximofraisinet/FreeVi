@@ -64,7 +64,9 @@ def _resolution_label(resolution) -> str:
     """Converts a (width, height) tuple back to the combo-box label string."""
     mapping = {
         (1920, 1080): "1920×1080 (Full HD)",
+        (1080, 1920): "1080×1920 (Full HD Vertical)",
         (1280, 720):  "1280×720 (HD)",
+        (720, 1280):  "720×1280 (HD Vertical)",
         (3840, 2160): "3840×2160 (4K)",
     }
     if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
@@ -153,9 +155,13 @@ def save_from_panel(panel) -> None:
         panel: A ConfigPanel instance.
     """
     res_map = {
-        "1920×1080 (Full HD)": (1920, 1080),
-        "1280×720 (HD)":       (1280, 720),
-        "3840×2160 (4K)":      (3840, 2160),
+        "1920×1080 (Full HD)":       (1920, 1080),
+        "1080×1920 (Full HD Vertical)": (1080, 1920),
+        "1280×720 (HD)":             (1280, 720),
+        "720×1280 (HD Vertical)":   (720, 1280),
+        "3840×2160 (4K)":            (3840, 2160),
+        "1080×1080 (Square HD)":    (1080, 1080),
+        "720×720 (Square)":         (720, 720),
     }
     fps_map = {"24 fps": 24, "30 fps": 30, "60 fps": 60}
 
