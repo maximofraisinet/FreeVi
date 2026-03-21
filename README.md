@@ -91,22 +91,45 @@ Instead of feeding a PDF, you can provide a JSON file with your own scenes. Sele
 
 **JSON Format:**
 
+**Example: Pexels Videos**
 ```json
 {
   "scenes": [
     {
-      "narrator_text": "Required. Narration text for TTS.",
-      "video_query": "Optional. 2-5 word Pexels search query.",
-      "title": "Optional. Slide title (with content).",
-      "content": ["Optional. Bullet point 1.", "Bullet point 2."],
-      "icon": "Optional. Icon name, e.g. flask.svg",
-      "generate_svg": false
+      "narrator_text": "The universe expands constantly, revealing mysteries beyond our comprehension.",
+      "video_query": "galaxy stars space"
+    },
+    {
+      "narrator_text": "Black holes are regions where gravity is so intense that nothing can escape.",
+      "video_query": "black hole animation"
     }
   ]
 }
 ```
 
-Each scene needs at least `video_query` **or** `title` + `content`. If the JSON includes `title` and `content`, those are used directly for slides without calling the LLM again. Click **"View JSON format"** in the GUI for a full example.
+**Example: AI Slides**
+```json
+{
+  "scenes": [
+    {
+      "narrator_text": "Photosynthesis is the process by which plants convert light into energy.",
+      "title": "Photosynthesis",
+      "content": ["Absorbing sunlight", "Converting to glucose", "Releasing oxygen"],
+      "icon": "leaf.svg",
+      "generate_svg": false
+    },
+    {
+      "narrator_text": "The water cycle describes the continuous movement of water on Earth.",
+      "title": "Water Cycle",
+      "content": ["Evaporation", "Condensation", "Precipitation"],
+      "icon": "droplet.svg",
+      "generate_svg": true
+    }
+  ]
+}
+```
+
+Each scene needs at least `video_query` **or** `title` + `content`. Add as many scenes as you need — they become consecutive clips in the final video.
 
 ### Command-Line Interface
 
