@@ -98,6 +98,7 @@ Instead of feeding a PDF, you can provide a JSON file with your own scenes. Sele
     {
       "narrator_text": "The universe expands constantly, revealing mysteries beyond our comprehension.",
       "video_query": "galaxy stars space"
+      // icon and generate_svg are optional and ignored in Pexels mode
     },
     {
       "narrator_text": "Black holes are regions where gravity is so intense that nothing can escape.",
@@ -115,15 +116,15 @@ Instead of feeding a PDF, you can provide a JSON file with your own scenes. Sele
       "narrator_text": "Photosynthesis is the process by which plants convert light into energy.",
       "title": "Photosynthesis",
       "content": ["Absorbing sunlight", "Converting to glucose", "Releasing oxygen"],
-      "icon": "leaf.svg",
-      "generate_svg": false
+      "icon": "leaf.svg",        // optional — icon from Tabler Icons library
+      "generate_svg": false       // optional — set true to also generate an AI SVG illustration
     },
     {
       "narrator_text": "The water cycle describes the continuous movement of water on Earth.",
       "title": "Water Cycle",
       "content": ["Evaporation", "Condensation", "Precipitation"],
-      "icon": "droplet.svg",
-      "generate_svg": true
+      "icon": "droplet.svg",      // optional
+      "generate_svg": true        // optional
     }
   ]
 }
