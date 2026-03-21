@@ -7,6 +7,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import fitz  # PyMuPDF
 import numpy as np
@@ -170,6 +171,27 @@ class Scene:
     slide_image_path: str = ""
     slide_icon: str = ""
 
+    def to_dict(self) -> dict:
+        return {
+            "number": self.number,
+            "narrator_text": self.narrator_text,
+            "video_query": self.video_query,
+            "slide_title": self.slide_title,
+            "slide_content": self.slide_content,
+            "slide_icon": self.slide_icon,
+        }
+
+    @staticmethod
+    def from_dict(data: dict, number: int) -> "Scene":
+        return Scene(
+            number=number,
+            narrator_text=data.get("narrator_text", ""),
+            video_query=data.get("video_query", ""),
+            slide_title=data.get("title", ""),
+            slide_content=data.get("content", []),
+            slide_icon=data.get("icon", ""),
+        )
+
 
 @dataclass
 class Script:
@@ -181,6 +203,77 @@ class Script:
     adjusted_max_scenes: int = 0
     # Number of PDF chunks the text was split into.
     n_chunks: int = 0
+
+
+# ---------------------------------------------------------------------------
+# JSON IMPORT
+# ---------------------------------------------------------------------------
+
+
+def validate_json_scenes(data: dict) -> tuple[bool, str | None]:
+    if "scenes" not in data:
+        return False, "JSON must have a 'scenes' key."
+
+    if not isinstance(data["scenes"], list):
+        return False, "'scenes' must be an array."
+
+    if len(data["scenes"]) == 0:
+        return False, "'scenes' array cannot be empty."
+
+    for i, scene in enumerate(data["scenes"]):
+        if not isinstance(scene, dict):
+            return False, f"Scene {i + 1} must be an object."
+
+        if "narrator_text" not in scene:
+            return False, f"Scene {i + 1} is missing 'narrator_text'."
+
+        if not isinstance(scene["narrator_text"], str) or not scene["narrator_text"].strip():
+            return False, f"Scene {i + 1}: 'narrator_text' must be a non-empty string."
+
+        has_video = "video_query" in scene and scene["video_query"]
+        has_slide = ("title" in scene and scene["title"]) and ("content" in scene and scene["content"])
+
+        if not has_video and not has_slide:
+            return False, f"Scene {i + 1} must have at least 'video_query' or ('title' + 'content')."
+
+        if "content" in scene and scene["content"] is not None:
+            if not isinstance(scene["content"], list):
+                return False, f"Scene {i + 1}: 'content' must be an array."
+
+        if "generate_svg" in scene and not isinstance(scene["generate_svg"], bool):
+            return False, f"Scene {i + 1}: 'generate_svg' must be a boolean."
+
+        if "icon" in scene and scene["icon"] is not None and not isinstance(scene["icon"], str):
+            return False, f"Scene {i + 1}: 'icon' must be a string."
+
+    return True, None
+
+
+def load_scenes_from_json(path: str) -> tuple[list[Scene], str | None]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        return [], f"Invalid JSON: {e}"
+    except Exception as e:
+        return [], f"Cannot read file: {e}"
+
+    valid, error = validate_json_scenes(data)
+    if not valid:
+        return [], error
+
+    scenes = [Scene.from_dict(s, i + 1) for i, s in enumerate(data["scenes"])]
+    return scenes, None
+
+
+def detect_scene_type(scene: Scene) -> str:
+    if scene.video_query and not scene.slide_title and not scene.slide_content:
+        return "pexels"
+    if scene.slide_title and scene.slide_content:
+        return "slides"
+    if scene.video_query:
+        return "pexels"
+    return "slides"
 
 
 # ---------------------------------------------------------------------------

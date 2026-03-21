@@ -51,6 +51,7 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QRadioButton,
 )
 
 # ---------------------------------------------------------------------------
@@ -149,6 +150,67 @@ class ScriptReviewDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
+# JSON Format dialog — shows the expected JSON schema with copy button
+# ---------------------------------------------------------------------------
+class JsonFormatDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("JSON Format")
+        self.setMinimumSize(520, 400)
+        self.resize(560, 480)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        info = QLabel(
+            "Your JSON file must follow this structure. "
+            "Each scene needs at least <b>video_query</b> or <b>title + content</b>."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._code = QTextEdit()
+        self._code.setReadOnly(True)
+        self._code.setFont(QFont("Monospace", 10))
+        self._code.setText(self._get_example())
+        self._code.setStyleSheet("background-color: #1a1b26; color: #a9b1d6; padding: 8px;")
+        layout.addWidget(self._code)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Copy to clipboard")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Close")
+        buttons.accepted.connect(self._copy)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _get_example(self) -> str:
+        return """{
+  "scenes": [
+    {
+      "narrator_text": "Required. Narration text for TTS.",
+      "video_query": "Optional. 2-5 word Pexels search query.",
+      "title": "Optional. Slide title (with content).",
+      "content": ["Optional. Bullet point 1.", "Bullet point 2."],
+      "icon": "Optional. Icon name, e.g. flask.svg",
+      "generate_svg": false
+    },
+    {
+      "narrator_text": "Second scene narration...",
+      "title": "Another Topic",
+      "content": ["Point A", "Point B", "Point C"]
+    }
+  ]
+}"""
+
+    def _copy(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self._code.toPlainText())
+        self.accept()
+
+
+# ---------------------------------------------------------------------------
 # Pipeline worker
 # ---------------------------------------------------------------------------
 class PipelineWorker(QThread):
@@ -225,72 +287,86 @@ class PipelineWorker(QThread):
         visual_source = cfg.get("visual_source", "pexels")
         slide_theme = get_theme(cfg.get("slide_theme", "tokyo_night")).to_dict()
 
-        # ── Step 1: Extract PDF text ──
-        self.progress.emit(5, "Extracting text from PDF...")
-        self.log_msg.emit("Extracting text from PDF...", "INFO")
-        text = extract_pdf_text(cfg["pdf_path"])
-        if self._cancel:
-            return
-        self.log_msg.emit(f"Text extracted: {len(text)} characters", "INFO")
+        # ── JSON mode: use preloaded scenes, skip PDF extraction and LLM ──
+        if cfg.get("input_mode") == "json":
+            script_scenes = cfg.get("preloaded_scenes", [])
+            if not script_scenes:
+                self.error.emit("No scenes loaded from JSON.")
+                return
+            self.progress.emit(5, "Loading from JSON...")
+            self.log_msg.emit(f"Loaded {len(script_scenes)} scenes from JSON.", "INFO")
+        else:
+            # ── Step 1: Extract PDF text ──
+            self.progress.emit(5, "Extracting text from PDF...")
+            self.log_msg.emit("Extracting text from PDF...", "INFO")
+            text = extract_pdf_text(cfg["pdf_path"])
+            if self._cancel:
+                return
+            self.log_msg.emit(f"Text extracted: {len(text)} characters", "INFO")
 
-        # ── Step 2: Generate script ──
-        self.progress.emit(15, f"Generating script with {cfg['model']}...")
-        self.log_msg.emit(f"Generating script with model '{cfg['model']}'...", "INFO")
+            # ── Step 2: Generate script ──
+            self.progress.emit(15, f"Generating script with {cfg['model']}...")
+            self.log_msg.emit(f"Generating script with model '{cfg['model']}'...", "INFO")
 
-        total_chunks: list[int] = []  # will be populated by on_progress callback
+            total_chunks: list[int] = []
 
-        def _on_script_progress(done: int, total: int) -> None:
-            """Relays chunk-level progress (15 % → 30 %) to the GUI."""
-            total_chunks[:] = [total]
-            if total > 0:
-                pct = 15 + int(15 * done / total)
-                self.progress.emit(pct, f"Generating script — chunk {done}/{total}...")
+            def _on_script_progress(done: int, total: int) -> None:
+                total_chunks[:] = [total]
+                if total > 0:
+                    pct = 15 + int(15 * done / total)
+                    self.progress.emit(pct, f"Generating script — chunk {done}/{total}...")
 
-        script = generate_script(
-            text,
-            cfg["model"],
-            cfg["max_scenes"],
-            cfg.get("custom_instructions", ""),
-            cfg.get("chunk_size", 4096),
-            narration_language=get_language_label(cfg.get("lang_code", "a")),
-            on_progress=_on_script_progress,
-        )
-        if self._cancel:
-            return
-        self.log_msg.emit(f"Script generated: {len(script.scenes)} scenes", "INFO")
+            script = generate_script(
+                text,
+                cfg["model"],
+                cfg["max_scenes"],
+                cfg.get("custom_instructions", ""),
+                cfg.get("chunk_size", 4096),
+                narration_language=get_language_label(cfg.get("lang_code", "a")),
+                on_progress=_on_script_progress,
+            )
+            if self._cancel:
+                return
+            self.log_msg.emit(f"Script generated: {len(script.scenes)} scenes", "INFO")
 
-        # ── Step 2b: Pause for user review of video queries (only for Pexels) ──
-        self.progress.emit(18, "Waiting for script review...")
-        self._mutex.lock()
-        self._reviewed_queries = None
-        self.script_ready.emit(script.scenes)
-        self._wait.wait(self._mutex)
-        reviewed = self._reviewed_queries
-        self._mutex.unlock()
+            # ── Step 2b: Pause for user review of video queries (only for Pexels) ──
+            self.progress.emit(18, "Waiting for script review...")
+            self._mutex.lock()
+            self._reviewed_queries = None
+            self.script_ready.emit(script.scenes)
+            self._wait.wait(self._mutex)
+            reviewed = self._reviewed_queries
+            self._mutex.unlock()
 
-        if self._cancel or reviewed is None:
-            return
+            if self._cancel or reviewed is None:
+                return
 
-        for scene, new_query in zip(script.scenes, reviewed):
-            q = new_query.strip()
-            if q:
-                scene.video_query = " ".join(q.split()[:5])
+            for scene, new_query in zip(script.scenes, reviewed):
+                q = new_query.strip()
+                if q:
+                    scene.video_query = " ".join(q.split()[:5])
+
+            script_scenes = script.scenes
 
         # ── Step 2c: Generate slide content (if using slides) ──
         if visual_source != VISUAL_PEXELS:
-            self.log_msg.emit("Generating slide content...", "INFO")
             use_icons = visual_source == "slides_svg"
-            for scene in script.scenes:
-                if self._cancel:
-                    return
-                title, content, icon = generate_slide_content(
-                    scene, cfg["model"], get_language_label(cfg.get("lang_code", "a")),
-                    use_icons=use_icons
-                )
-                scene.slide_title = title
-                scene.slide_content = content
-                scene.slide_icon = icon
-                self.log_msg.emit(f"  Slide {scene.number}: {title[:40]}... (icon: {icon})", "INFO")
+            has_slide_content = any(s.slide_title and s.slide_content for s in script_scenes)
+            if has_slide_content:
+                self.log_msg.emit("Using slide content from JSON.", "INFO")
+            else:
+                self.log_msg.emit("Generating slide content...", "INFO")
+                for scene in script_scenes:
+                    if self._cancel:
+                        return
+                    title, content, icon = generate_slide_content(
+                        scene, cfg["model"], get_language_label(cfg.get("lang_code", "a")),
+                        use_icons=use_icons
+                    )
+                    scene.slide_title = title
+                    scene.slide_content = content
+                    scene.slide_icon = icon
+                    self.log_msg.emit(f"  Slide {scene.number}: {title[:40]}... (icon: {icon})", "INFO")
 
         # ── Steps 3–4: Process scenes ──
         audio_engine = AudioEngine(voice=cfg["voice"], speed=cfg["speed"],
@@ -305,11 +381,11 @@ class PipelineWorker(QThread):
             slide_dir = os.path.join(temp_dir, "slides")
             os.makedirs(slide_dir, exist_ok=True)
 
-        total_scenes = len(script.scenes)
+        total_scenes = len(script_scenes)
         base_progress = 20
         progress_per_scene = 65 // total_scenes
 
-        for scene in script.scenes:
+        for scene in script_scenes:
             if self._cancel:
                 return
 
@@ -468,9 +544,11 @@ class ConfigPanel(QWidget):
     def __init__(self, ollama_models: list[str], kokoro_voices: list[str]):
         super().__init__()
         self._models = ollama_models
-        self._all_voices = kokoro_voices  # full flat list (used as fallback)
-        self._pdf_text: str = ""          # cached text from the last loaded PDF
-        self._n_chunks: int = 0           # last computed chunk count (0 = no PDF)
+        self._all_voices = kokoro_voices
+        self._pdf_text: str = ""
+        self._n_chunks: int = 0
+        self._json_path: str = ""
+        self._json_scenes: list = []
         self._build_ui()
 
     def _build_ui(self):
@@ -478,11 +556,26 @@ class ConfigPanel(QWidget):
         layout.setSpacing(12)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # ── 1. Input ──
-        grp_input = QGroupBox("Input")
-        grp_input.setObjectName("groupbox")
-        lay_input = QGridLayout(grp_input)
-        lay_input.setSpacing(8)
+        # ── 0. Input Mode Selector ──
+        grp_mode = QGroupBox("Input")
+        grp_mode.setObjectName("groupbox")
+        lay_mode = QHBoxLayout(grp_mode)
+        lay_mode.setSpacing(10)
+
+        self.radio_pdf = QRadioButton("From PDF")
+        self.radio_json = QRadioButton("From JSON")
+        self.radio_pdf.setChecked(True)
+        self.radio_pdf.toggled.connect(self._set_input_mode)
+
+        lay_mode.addWidget(self.radio_pdf)
+        lay_mode.addWidget(self.radio_json)
+        layout.addWidget(grp_mode)
+
+        # ── 1. PDF Input (visible only in PDF mode) ──
+        self.grp_pdf = QGroupBox("PDF File")
+        self.grp_pdf.setObjectName("groupbox")
+        lay_pdf = QGridLayout(self.grp_pdf)
+        lay_pdf.setSpacing(8)
 
         self.lbl_pdf = QLabel("No file selected")
         self.lbl_pdf.setWordWrap(True)
@@ -495,16 +588,40 @@ class ConfigPanel(QWidget):
         self.lbl_chunks_info.setStyleSheet("color: #565f89; font-size: 11px;")
         self.lbl_chunks_info.setWordWrap(True)
 
-        lay_input.addWidget(QLabel("PDF file:"), 0, 0)
-        lay_input.addWidget(btn_pdf, 0, 1)
-        lay_input.addWidget(self.lbl_pdf, 1, 0, 1, 2)
-        lay_input.addWidget(self.lbl_chunks_info, 2, 0, 1, 2)
-        layout.addWidget(grp_input)
+        lay_pdf.addWidget(QLabel("PDF file:"), 0, 0)
+        lay_pdf.addWidget(btn_pdf, 0, 1)
+        lay_pdf.addWidget(self.lbl_pdf, 1, 0, 1, 2)
+        lay_pdf.addWidget(self.lbl_chunks_info, 2, 0, 1, 2)
+        layout.addWidget(self.grp_pdf)
 
-        # ── 2. LLM model ──
-        grp_llm = QGroupBox("Language Model (LLM)")
-        grp_llm.setObjectName("groupbox")
-        lay_llm = QGridLayout(grp_llm)
+        # ── 1b. JSON Input (visible only in JSON mode) ──
+        self.grp_json = QGroupBox("JSON File")
+        self.grp_json.setObjectName("groupbox")
+        self.grp_json.setVisible(False)
+        lay_json = QGridLayout(self.grp_json)
+        lay_json.setSpacing(8)
+
+        self.lbl_json = QLabel("No file selected")
+        self.lbl_json.setWordWrap(True)
+        self.lbl_json.setStyleSheet("color: #888; font-style: italic;")
+        btn_json = QPushButton("Select JSON")
+        btn_json.setObjectName("btn_secondary")
+        btn_json.clicked.connect(self._select_json)
+
+        btn_json_format = QPushButton("View JSON format")
+        btn_json_format.setObjectName("btn_secondary")
+        btn_json_format.clicked.connect(self._show_json_format)
+
+        lay_json.addWidget(QLabel("JSON file:"), 0, 0)
+        lay_json.addWidget(btn_json, 0, 1)
+        lay_json.addWidget(self.lbl_json, 1, 0, 1, 2)
+        lay_json.addWidget(btn_json_format, 2, 0, 1, 2)
+        layout.addWidget(self.grp_json)
+
+        # ── 2. LLM model (hidden in JSON mode) ──
+        self.grp_llm = QGroupBox("Language Model (LLM)")
+        self.grp_llm.setObjectName("groupbox")
+        lay_llm = QGridLayout(self.grp_llm)
         lay_llm.setSpacing(8)
 
         self.combo_model = QComboBox()
@@ -529,17 +646,13 @@ class ConfigPanel(QWidget):
             "Common values: 2048, 4096, 8192"
         )
 
-        # Live info label: shows the auto-calculated Ollama context window
         self.lbl_context_info = QLabel("")
         self.lbl_context_info.setStyleSheet("color: #565f89; font-size: 11px;")
         self.lbl_context_info.setWordWrap(True)
 
-        # Update context info label whenever model or chunk size changes
         self.combo_model.currentTextChanged.connect(self._update_context_info)
         self.spin_chunk_size.valueChanged.connect(self._update_context_info)
         self.spin_max_scenes.valueChanged.connect(self._update_context_info)
-
-        # Recompute n_chunks (and update max_scenes spinner) when chunk size changes
         self.spin_chunk_size.valueChanged.connect(self._recompute_chunks)
 
         lay_llm.addWidget(QLabel("Model:"), 0, 0)
@@ -549,9 +662,8 @@ class ConfigPanel(QWidget):
         lay_llm.addWidget(QLabel("Chunk size (tokens):"), 2, 0)
         lay_llm.addWidget(self.spin_chunk_size, 2, 1)
         lay_llm.addWidget(self.lbl_context_info, 3, 0, 1, 2)
-        layout.addWidget(grp_llm)
+        layout.addWidget(self.grp_llm)
 
-        # Populate the info label with the initial values
         self._update_context_info()
 
         # ── 3. Language & Voice (Kokoro) ──
@@ -778,10 +890,10 @@ class ConfigPanel(QWidget):
         lay_output.addWidget(self.chk_open_when_done, 1, 0, 1, 3)
         layout.addWidget(grp_output)
 
-        # ── 7. Prompt customization ──
-        grp_prompt = QGroupBox("Narrator Instructions (AI Prompt)")
-        grp_prompt.setObjectName("groupbox")
-        lay_prompt = QVBoxLayout(grp_prompt)
+        # ── 7. Prompt customization (hidden in JSON mode) ──
+        self.grp_prompt = QGroupBox("Narrator Instructions (AI Prompt)")
+        self.grp_prompt.setObjectName("groupbox")
+        lay_prompt = QVBoxLayout(self.grp_prompt)
         lay_prompt.setSpacing(6)
 
         lbl_prompt_info = QLabel(
@@ -813,12 +925,45 @@ class ConfigPanel(QWidget):
         lay_prompt.addWidget(lbl_prompt_info)
         lay_prompt.addWidget(self.txt_prompt)
         lay_prompt.addWidget(btn_reset_prompt, alignment=Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(grp_prompt)
+        layout.addWidget(self.grp_prompt)
 
         layout.addStretch()
 
+    def _set_input_mode(self):
+        if self.radio_pdf.isChecked():
+            mode = "pdf"
+            self.grp_pdf.setVisible(True)
+            self.grp_json.setVisible(False)
+            self.grp_llm.setVisible(True)
+            self.grp_prompt.setVisible(True)
+        else:
+            mode = "json"
+            self.grp_pdf.setVisible(False)
+            self.grp_json.setVisible(True)
+            self.grp_llm.setVisible(False)
+            self.grp_prompt.setVisible(False)
+
+    def _select_json(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select JSON file", "", "JSON files (*.json);;All files (*)"
+        )
+        if path:
+            from freevi import load_scenes_from_json
+            scenes, error = load_scenes_from_json(path)
+            if error:
+                self.lbl_json.setText(f"Error: {error}")
+                self.lbl_json.setStyleSheet("color: #f7768e; font-style: normal;")
+            else:
+                self.lbl_json.setText(f"{len(scenes)} scenes loaded from:\n{path}")
+                self.lbl_json.setStyleSheet("color: #9ece6a; font-style: normal;")
+                self._json_path = path
+                self._json_scenes = scenes
+
+    def _show_json_format(self):
+        dlg = JsonFormatDialog(self)
+        dlg.exec()
+
     def _reset_prompt(self):
-        """Clears the prompt editor so the built-in default will be used."""
         self.txt_prompt.clear()
 
     def _update_context_info(self, *_args):
@@ -984,9 +1129,15 @@ class ConfigPanel(QWidget):
 
     def get_config(self) -> dict | None:
         """Validates and returns the current configuration. Returns None on errors."""
-        pdf = self.lbl_pdf.text()
-        if pdf == "No file selected" or not Path(pdf).exists():
-            return None
+        if self.radio_pdf.isChecked():
+            pdf = self.lbl_pdf.text()
+            if pdf == "No file selected" or not Path(pdf).exists():
+                return None
+            input_path = pdf
+        else:
+            if not self._json_path:
+                return None
+            input_path = self._json_path
 
         visual_source_map = {
             0: "pexels",
@@ -1009,7 +1160,7 @@ class ConfigPanel(QWidget):
         fps_map = {"24 fps": 24, "30 fps": 30, "60 fps": 60}
 
         return {
-            "pdf_path": pdf,
+            "pdf_path": input_path,
             "model": self.combo_model.currentText(),
             "lang_code": self.combo_language.currentData() or "a",
             "voice": self.combo_voice.currentText(),
@@ -1109,11 +1260,16 @@ class ConfigPanel(QWidget):
     def validation_errors(self) -> list[str]:
         """Returns a list of validation errors."""
         errors = []
-        pdf = self.lbl_pdf.text()
-        if pdf == "No file selected":
-            errors.append("No PDF file has been selected.")
-        elif not Path(pdf).exists():
-            errors.append(f"PDF file does not exist: {pdf}")
+
+        if self.radio_pdf.isChecked():
+            pdf = self.lbl_pdf.text()
+            if pdf == "No file selected":
+                errors.append("No PDF file has been selected.")
+            elif not Path(pdf).exists():
+                errors.append(f"PDF file does not exist: {pdf}")
+        else:
+            if not self._json_path:
+                errors.append("No JSON file has been selected.")
 
         visual_source_idx = self.combo_visual_source.currentIndex()
         if visual_source_idx == 0 and not self.edit_pexels.text().strip():
@@ -1667,6 +1823,16 @@ class MainWindow(QMainWindow):
         config = self.panel_config.get_config()
         if config is None:
             return
+
+        # JSON mode: require a loaded JSON file
+        if self.panel_config.radio_json.isChecked():
+            if not getattr(self.panel_config, "_json_path", None):
+                QMessageBox.warning(self, "No JSON loaded", "Please select a JSON file first.")
+                return
+            config["input_mode"] = "json"
+            config["preloaded_scenes"] = self.panel_config._json_scenes
+        else:
+            config["input_mode"] = "pdf"
 
         # Apply video config to the freevi module before running
         self._apply_video_config(config)
