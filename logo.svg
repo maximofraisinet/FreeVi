@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#7aa2f7;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#bb9af7;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#7dcfff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2ac3de;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="90" fill="url(#grad1)" opacity="0.15"/>
+  
+  <!-- PDF Document icon -->
+  <path d="M55 50 L55 150 L145 150 L145 70 L115 50 Z" 
+        fill="none" stroke="#7aa2f7" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M115 50 L115 70 L145 70" 
+        fill="none" stroke="#7aa2f7" stroke-width="4" stroke-linejoin="round"/>
+  
+  <!-- Folded corner -->
+  <path d="M115 50 L130 65 L115 70" 
+        fill="none" stroke="#bb9af7" stroke-width="3" stroke-linejoin="round"/>
+  
+  <!-- Play button / Video indicator -->
+  <circle cx="100" cy="110" r="28" fill="url(#grad2)"/>
+  <polygon points="92,98 112,110 92,122" fill="#1a1b26"/>
+  
+  <!-- AI dots -->
+  <circle cx="65" cy="135" r="4" fill="#7aa2f7"/>
+  <circle cx="75" cy="145" r="3" fill="#bb9af7" opacity="0.7"/>
+  <circle cx="58" cy="142" r="2" fill="#7dcfff" opacity="0.5"/>
+  
+  <!-- Text -->
+  <text x="100" y="175" text-anchor="middle" font-family="Arial, sans-serif" 
+        font-size="16" font-weight="bold" fill="#c0caf5">FreeVi</text>
+</svg>

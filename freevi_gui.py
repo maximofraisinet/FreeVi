@@ -1395,6 +1395,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._apply_styles()
         self.setWindowTitle("FreeVi — PDF Video Generator")
+        self.setWindowIcon(QIcon("logo.svg"))
         self.setMinimumSize(1050, 700)
         self.resize(1200, 800)
 

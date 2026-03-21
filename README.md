@@ -13,6 +13,7 @@ FreeVi transforms PDF documents into dynamic audiovisual narratives. Choose betw
 ## Features
 
 - **PDF to Video:** Convert PDF text into engaging audiovisual content.
+- **JSON to Video:** Import a JSON file with scenes to generate videos without going through the LLM script generation step.
 - **Multiple Visual Sources:** Choose between stock videos or AI-generated slides.
   - **Pexels Videos:** Automatic background video clips.
   - **AI Slides (Simple):** Clean, themed presentations with text and icons.
@@ -21,6 +22,7 @@ FreeVi transforms PDF documents into dynamic audiovisual narratives. Choose betw
 - **Smart Processing:** Local LLM (Ollama) adapts text into natural narration scripts.
 - **Natural Voices:** Multilingual TTS using Kokoro ONNX.
 - **Customizable Themes:** Tokyo Night, Executive, and Minimal slide themes.
+- **JSON Import:** Bring your own scenes (narrator text + video/slide data) via JSON — no PDF or LLM needed.
 - **Dual Interface:** Intuitive GUI or flexible CLI.
 
 ## Requirements
@@ -78,9 +80,33 @@ python freevi_gui.py
 ```
 
 The GUI lets you select:
+- **Input Mode:** "From PDF" (LLM generates the script) or "From JSON" (use your own scenes)
 - **Visual Source:** Pexels (Videos), Slides (Simple), or Slides (with AI SVG)
 - **Slide Theme:** Tokyo Night, Executive, or Minimal
 - All other options (voice, language, resolution, etc.)
+
+### JSON Import
+
+Instead of feeding a PDF, you can provide a JSON file with your own scenes. Select **"From JSON"** in the GUI, load your file, and click **Generate Video**. The LLM script generation step is skipped entirely.
+
+**JSON Format:**
+
+```json
+{
+  "scenes": [
+    {
+      "narrator_text": "Required. Narration text for TTS.",
+      "video_query": "Optional. 2-5 word Pexels search query.",
+      "title": "Optional. Slide title (with content).",
+      "content": ["Optional. Bullet point 1.", "Bullet point 2."],
+      "icon": "Optional. Icon name, e.g. flask.svg",
+      "generate_svg": false
+    }
+  ]
+}
+```
+
+Each scene needs at least `video_query` **or** `title` + `content`. If the JSON includes `title` and `content`, those are used directly for slides without calling the LLM again. Click **"View JSON format"** in the GUI for a full example.
 
 ### Command-Line Interface
 
@@ -126,18 +152,33 @@ python freevi.py document.pdf --visual-source slides_svg --slide-theme tokyo_nig
 ## Architecture
 
 ```
-PDF → Text Extraction → LLM Script Generation → TTS Audio
-                                                    ↓
-                              ┌────────────────────┴────────────────────┐
-                              ↓                                         ↓
-                      Pexels Videos                              AI Slides
-                      (Download)                               (Generate)
-                              ↓                                         ↓
-                              └────────────────────┬────────────────────┘
-                                                       ↓
-                                                  MoviePy
-                                                     ↓
-                                               Final Video
+                    ┌─────────────────────────────┐
+                    │          INPUT              │
+                    │  PDF  ──or──   JSON file   │
+                    └───────────┬─────────────────┘
+                                ↓
+              ┌─────────────────┴─────────────────┐
+              ↓                                   ↓
+      PDF Path (LLM)                    JSON Path (direct)
+              ↓                                   ↓
+   Text Extraction                    Load scenes directly
+              ↓
+   LLM Script Generation                     
+              ↓                                   ↓
+              └──────────────┬────────────────────┘
+                             ↓
+                      TTS Audio
+                             ↓
+           ┌────────────────┴────────────────┐
+           ↓                                 ↓
+    Pexels Videos                     AI Slides
+    (Download)                      (Generate)
+           ↓                                 ↓
+           └──────────────┬────────────────────┘
+                          ↓
+                     MoviePy
+                          ↓
+                    Final Video
 ```
 
 ## Dependencies
