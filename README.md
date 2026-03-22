@@ -8,14 +8,15 @@ Automatically generate engaging videos from PDF documents using local AI, Text-t
 
 ## About
 
-FreeVi transforms PDF documents into dynamic audiovisual narratives. Choose between **stock videos from Pexels** or **AI-generated slides** as your visual source. Built with local LLMs (via Ollama), high-quality TTS (Kokoro), and modern visual themes.
+FreeVi transforms PDF documents into dynamic audiovisual narratives. Choose between **stock videos**, **stock photos** (with Ken Burns effect), or **AI-generated slides** as your visual source. Built with local LLMs (via Ollama), high-quality TTS (Kokoro), and modern visual themes.
 
 ## Features
 
 - **PDF to Video:** Convert PDF text into engaging audiovisual content.
 - **JSON to Video:** Import a JSON file with scenes to generate videos without going through the LLM script generation step.
-- **Multiple Visual Sources:** Choose between stock videos or AI-generated slides.
+- **Multiple Visual Sources:** Choose between stock videos, photos, or AI-generated slides.
   - **Pexels Videos:** Automatic background video clips.
+  - **Pexels Images:** Stock photos with Ken Burns (pan & zoom) effect.
   - **AI Slides (Simple):** Clean, themed presentations with text and icons.
   - **AI Slides (with SVG):** Presentations with AI-generated geometric illustrations and icons.
 - **Smart Icon Selection:** 6,000+ icons from Tabler Icons, automatically selected based on content.
@@ -30,7 +31,7 @@ FreeVi transforms PDF documents into dynamic audiovisual narratives. Choose betw
 - **Python 3.10+** installed on your system.
 - **Ollama:** Installed and running (`ollama serve`). Download a model: `ollama pull qwen3`.
 - **Kokoro Models:** Place `kokoro-v1.0.onnx` and `voices-v1.0.bin` in `./kokoro-v1.0/`.
-- **Pexels API Key:** Required only for stock video mode.
+- **Pexels API Key:** Required only for Pexels video/image mode.
 
 ## Installation
 
@@ -150,6 +151,7 @@ python freevi.py document.pdf --visual-source slides_svg --slide-theme tokyo_nig
 | Option | Description | Time |
 |--------|-------------|------|
 | `pexels` | Stock videos from Pexels API | Slow |
+| `pexels_images` | Stock photos with Ken Burns (pan & zoom) effect | Medium |
 | `slides_simple` | Themed slides with text and icons | Fast |
 | `slides_svg` | Themed slides with AI-generated SVG illustrations and icons | Medium |
 

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -43,10 +44,11 @@ TARGET_PRESET = "medium"  # x264 encoding preset
 
 # Visual source options
 VISUAL_PEXELS = "pexels"
+VISUAL_PEXELS_IMAGES = "pexels_images"
 VISUAL_SLIDES_SIMPLE = "slides_simple"
 VISUAL_SLIDES_SVG = "slides_svg"
 
-VISUAL_OPTIONS = [VISUAL_PEXELS, VISUAL_SLIDES_SIMPLE, VISUAL_SLIDES_SVG]
+VISUAL_OPTIONS = [VISUAL_PEXELS, VISUAL_PEXELS_IMAGES, VISUAL_SLIDES_SIMPLE, VISUAL_SLIDES_SVG]
 
 # Directory where Kokoro models are stored (relative to this script)
 _env_kokoro = os.environ.get("KOKORO_MODEL_DIR", "")
@@ -170,6 +172,7 @@ class Scene:
     slide_content: list = field(default_factory=list)
     slide_image_path: str = ""
     slide_icon: str = ""
+    image_path: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -1242,6 +1245,7 @@ class AudioEngine:
 # 4. VISUAL MODULE (Pexels API - 100% Free)
 # ---------------------------------------------------------------------------
 PEXELS_API_URL = "https://api.pexels.com/videos/search"
+PEXELS_PHOTOS_API_URL = "https://api.pexels.com/v1/search"
 
 
 def get_pexels_api_key() -> str:
@@ -1482,6 +1486,163 @@ def search_and_download_video(
     if ok and used_urls is not None:
         used_urls.add(info["url"])
     return ok
+
+
+def search_pexels_image(
+    query: str,
+    api_key: str,
+    orientation: str = "landscape",
+    used_urls: set | None = None,
+) -> dict | None:
+    """
+    Searches for a photo on Pexels and returns info about the best result.
+
+    Fetches up to 15 candidates and selects the first unused one with
+    sufficient resolution.
+
+    Args:
+        query: Search terms in English (2-5 words).
+        api_key: Pexels API key.
+        orientation: "landscape", "portrait" or "square".
+        used_urls: Set of photo URLs already downloaded in this run.
+
+    Returns:
+        Dict with 'url' (download link), 'width', 'height' or None.
+    """
+    headers = {"Authorization": api_key}
+    params = {
+        "query": query,
+        "per_page": 15,
+        "orientation": orientation,
+    }
+
+    try:
+        resp = requests.get(PEXELS_PHOTOS_API_URL, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.RequestException as e:
+        log.error(f"  Pexels Photos API error: {e}")
+        return None
+
+    photos = data.get("photos", [])
+    if not photos:
+        log.warning(f"  No photos found for '{query}'")
+        return None
+
+    _used = used_urls or set()
+    for photo in photos:
+        src = photo.get("src", {})
+        url = src.get("large2x") or src.get("large") or src.get("original")
+        if not url:
+            continue
+        w = photo.get("width", 0)
+        h = photo.get("height", 0)
+        if w < 1280 or h < 720:
+            continue
+        if url not in _used:
+            log.info(f"  Pexels photo: selected '{photo.get('alt', query)}' ({w}x{h})")
+            return {
+                "url": url,
+                "width": w,
+                "height": h,
+                "alt": photo.get("alt", query),
+            }
+
+    if photos:
+        src = photos[0].get("src", {})
+        url = src.get("large2x") or src.get("large") or src.get("original")
+        log.warning(f"  All candidates for '{query}' already used — reusing first.")
+        return {
+            "url": url,
+            "width": photos[0].get("width", 0),
+            "height": photos[0].get("height", 0),
+            "alt": photos[0].get("alt", query),
+        }
+
+    return None
+
+
+def search_and_download_image(
+    query: str,
+    api_key: str,
+    output_path: str,
+    orientation: str = "landscape",
+    used_urls: set | None = None,
+) -> bool:
+    """
+    Searches and downloads a photo from Pexels.
+
+    Fallback chain: full query → first two words → first word →
+    generic fallbacks.
+
+    Args:
+        query: Original search terms (2-5 words from the LLM).
+        api_key: Pexels API key.
+        output_path: Path where the image will be saved.
+        orientation: "landscape", "portrait" or "square".
+        used_urls: Mutable set of photo URLs already downloaded in this run.
+
+    Returns:
+        True if downloaded successfully.
+    """
+    words = query.split()
+    attempts = [query]
+    if len(words) > 2:
+        attempts.append(" ".join(words[:2]))
+    if len(words) > 1:
+        attempts.append(words[0])
+    attempts += ["nature landscape", "business technology", "abstract background"]
+
+    seen: set[str] = set()
+    unique_attempts: list[str] = []
+    for a in attempts:
+        if a not in seen:
+            seen.add(a)
+            unique_attempts.append(a)
+
+    info = None
+    for attempt in unique_attempts:
+        log.info(f"  Searching Pexels Photos: '{attempt}'")
+        info = search_pexels_image(attempt, api_key, orientation, used_urls)
+        if info is not None:
+            if attempt != query:
+                log.warning(f"  Original query '{query}' failed — using fallback '{attempt}'")
+            break
+
+    if info is None:
+        log.error(f"  Could not find any photo (query: '{query}')")
+        return False
+
+    ok = download_pexels_photo(info["url"], output_path)
+    if ok and used_urls is not None:
+        used_urls.add(info["url"])
+    return ok
+
+
+def download_pexels_photo(url: str, output_path: str) -> bool:
+    """
+    Downloads a photo from a URL.
+
+    Args:
+        url: Direct URL of the image file.
+        output_path: Local path where the file will be saved.
+
+    Returns:
+        True if the download was successful.
+    """
+    try:
+        log.info(f"  Downloading photo...")
+        resp = requests.get(url, stream=True, timeout=60)
+        resp.raise_for_status()
+        with open(output_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                f.write(chunk)
+        size_mb = os.path.getsize(output_path) / (1024 * 1024)
+        log.info(f"  Downloaded: {size_mb:.1f} MB → {output_path}")
+        return True
+    except requests.exceptions.RequestException as e:
+        log.error(f"  Download failed: {e}")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1854,6 +2015,66 @@ def render_slide_image(
     )
 
 
+
+
+def assemble_image_scene(
+    image_path: str,
+    audio_path: str,
+    duration: float,
+    output_path: str,
+    zoom_in: bool = True,
+) -> str:
+    """
+    Creates a video clip from a Pexels photo and mixes in the audio.
+
+    Args:
+        image_path: Path to the downloaded image file.
+        audio_path: Path to the .wav audio file for this scene.
+        duration: Exact duration in seconds (from audio).
+        output_path: Output video path.
+        zoom_in: Unused, kept for API compatibility.
+
+    Returns:
+        Path to the assembled video.
+    """
+    tmp_video = output_path + ".tmp_img.mp4"
+    tmp_audio = output_path + ".tmp_audio.m4a"
+
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-loop", "1",
+        "-i", image_path,
+        "-vf", f"scale={TARGET_WIDTH}:{TARGET_HEIGHT}:force_original_aspect_ratio=increase,crop={TARGET_WIDTH}:{TARGET_HEIGHT}",
+        "-t", str(duration),
+        "-r", str(TARGET_FPS),
+        "-c:v", "libx264", "-preset", TARGET_PRESET,
+        "-pix_fmt", "yuv420p",
+        tmp_video,
+    ], capture_output=True, check=True)
+
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", audio_path,
+        "-c:a", "aac", "-b:a", "192k",
+        tmp_audio,
+    ], capture_output=True, check=True)
+
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", tmp_video,
+        "-i", tmp_audio,
+        "-c:v", "copy", "-c:a", "copy",
+        "-shortest",
+        output_path,
+    ], capture_output=True, check=True)
+
+    Path(tmp_video).unlink(missing_ok=True)
+    Path(tmp_audio).unlink(missing_ok=True)
+
+    log.info(f"  Image scene assembled: {output_path}")
+    return output_path
+
+
 def assemble_slide_scene(
     slide_image_path: str,
     audio_path: str,
@@ -1938,7 +2159,7 @@ class VideoGenerator:
             voice=voice, speed=voice_speed, lang_code=lang_code,
         )
 
-        if visual_source == VISUAL_PEXELS:
+        if visual_source in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES):
             self.pexels_api_key = get_pexels_api_key()
         else:
             from slide_templates import get_theme
@@ -1978,7 +2199,7 @@ class VideoGenerator:
             )
 
         # ── Step 2b: Generate slide content if needed ──
-        if self.visual_source != VISUAL_PEXELS:
+        if self.visual_source not in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES):
             log.info("=" * 60)
             log.info(f"STEP 2b/5: Extracting slide content...")
             log.info("=" * 60)
@@ -1996,8 +2217,10 @@ class VideoGenerator:
         final_scene_paths = []
         used_video_urls: set[str] = set()
 
-        slide_dir = os.path.join(self.temp_dir, "slides")
-        os.makedirs(slide_dir, exist_ok=True)
+        slide_dir = ""
+        if self.visual_source not in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES):
+            slide_dir = os.path.join(self.temp_dir, "slides")
+            os.makedirs(slide_dir, exist_ok=True)
 
         for scene in script.scenes:
             log.info("=" * 60)
@@ -2017,6 +2240,8 @@ class VideoGenerator:
             # ── 3b: Visual content based on visual_source ──
             if self.visual_source == VISUAL_PEXELS:
                 self._process_pexels_scene(scene, duration, used_video_urls)
+            elif self.visual_source == VISUAL_PEXELS_IMAGES:
+                self._process_pexels_image_scene(scene, used_video_urls)
             elif self.visual_source == VISUAL_SLIDES_SVG:
                 self._process_slide_svg_scene(scene, duration, slide_dir)
             else:
@@ -2031,6 +2256,11 @@ class VideoGenerator:
             if self.visual_source == VISUAL_PEXELS:
                 assemble_scene_from_raw(
                     scene.video_path, audio_path, duration, scene_final_path
+                )
+            elif self.visual_source == VISUAL_PEXELS_IMAGES:
+                zoom_in = scene.number % 2 == 1
+                assemble_image_scene(
+                    scene.image_path, audio_path, duration, scene_final_path, zoom_in
                 )
             else:
                 assemble_slide_scene(
@@ -2087,6 +2317,34 @@ class VideoGenerator:
             raw_video_path = self._generate_black_video(duration, raw_video_path)
 
         scene.video_path = raw_video_path
+
+    def _process_pexels_image_scene(self, scene, used_video_urls: set):
+        """Downloads and processes Pexels image for a scene."""
+        log.info(f"  [Image] Searching '{scene.video_query}' on Pexels Photos...")
+        raw_image_path = os.path.join(
+            self.temp_dir, f"scene_{scene.number:02d}_image.jpg"
+        )
+        success = search_and_download_image(
+            scene.video_query,
+            self.pexels_api_key,
+            raw_image_path,
+            orientation=self.orientation,
+            used_urls=used_video_urls,
+        )
+
+        if not success:
+            log.error(
+                f"  Could not get image for scene {scene.number}. "
+                f"Generating placeholder."
+            )
+            from moviepy import ColorClip
+            placeholder = ColorClip(
+                size=(TARGET_WIDTH, TARGET_HEIGHT), color=(30, 30, 50)
+            ).with_duration(10).with_fps(TARGET_FPS)
+            placeholder.write_videofile(raw_image_path, codec="libx264", logger=None)
+            placeholder.close()
+
+        scene.image_path = raw_image_path
 
     def _process_slide_simple_scene(self, scene, duration: float, slide_dir: str):
         """Renders a slide with icon from library for a scene."""

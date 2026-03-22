@@ -35,3 +35,5 @@ env/
 # ── Configuración persistente del usuario (generada en tiempo de ejecución) ──
 # Creado automáticamente al abrir el programa, no debe subirse al repositorio.
 user_config.json
+
+docs/*

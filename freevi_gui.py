@@ -266,6 +266,7 @@ class PipelineWorker(QThread):
         """Runs the full pipeline step by step."""
         from freevi import (
             AudioEngine,
+            assemble_image_scene,
             assemble_scene_from_raw,
             assemble_slide_scene,
             concatenate_scenes,
@@ -274,8 +275,10 @@ class PipelineWorker(QThread):
             generate_slide_content,
             get_language_label,
             render_slide_image,
+            search_and_download_image,
             search_and_download_video,
             VISUAL_PEXELS,
+            VISUAL_PEXELS_IMAGES,
             VISUAL_SLIDES_SIMPLE,
             VISUAL_SLIDES_SVG,
         )
@@ -377,7 +380,7 @@ class PipelineWorker(QThread):
         used_video_urls: set[str] = set()
         slide_dir = ""
 
-        if visual_source != VISUAL_PEXELS:
+        if visual_source not in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES):
             slide_dir = os.path.join(temp_dir, "slides")
             os.makedirs(slide_dir, exist_ok=True)
 
@@ -413,6 +416,10 @@ class PipelineWorker(QThread):
                 self._process_pexels_scene_gui(
                     scene, duration, pexels_key, cfg, temp_dir, used_video_urls
                 )
+            elif visual_source == VISUAL_PEXELS_IMAGES:
+                self._process_pexels_image_scene_gui(
+                    scene, pexels_key, cfg, temp_dir, used_video_urls
+                )
             elif visual_source == VISUAL_SLIDES_SVG:
                 self._process_slide_svg_scene_gui(
                     scene, duration, cfg, slide_dir, slide_theme
@@ -434,6 +441,9 @@ class PipelineWorker(QThread):
 
             if visual_source == VISUAL_PEXELS:
                 assemble_scene_from_raw(scene.video_path, audio_path, duration, scene_path)
+            elif visual_source == VISUAL_PEXELS_IMAGES:
+                zoom_in = scene.number % 2 == 1
+                assemble_image_scene(scene.image_path, audio_path, duration, scene_path, zoom_in)
             else:
                 assemble_slide_scene(scene.slide_image_path, audio_path, duration, scene_path)
 
@@ -487,6 +497,34 @@ class PipelineWorker(QThread):
             clip.write_videofile(raw_path, codec="libx264", audio=False, logger=None)
             clip.close()
         scene.video_path = raw_path
+
+    def _process_pexels_image_scene_gui(self, scene, pexels_key, cfg, temp_dir, used_video_urls):
+        """Downloads Pexels image for a scene in GUI worker."""
+        from freevi import search_and_download_image
+        import freevi
+        from moviepy import ColorClip
+
+        raw_path = os.path.join(temp_dir, f"scene_{scene.number:02d}_image.jpg")
+        success = search_and_download_image(
+            scene.video_query,
+            pexels_key,
+            raw_path,
+            orientation=cfg.get("orientation", "landscape"),
+            used_urls=used_video_urls,
+        )
+        if not success:
+            self.log_msg.emit(
+                f"  Pexels failed for '{scene.video_query}', using placeholder",
+                "WARNING",
+            )
+            clip = ColorClip(
+                size=(freevi.TARGET_WIDTH, freevi.TARGET_HEIGHT),
+                color=(30, 30, 50),
+            )
+            clip = clip.with_duration(10).with_fps(freevi.TARGET_FPS)
+            clip.write_videofile(raw_path, codec="libx264", audio=False, logger=None)
+            clip.close()
+        scene.image_path = raw_path
 
     def _process_slide_simple_scene_gui(self, scene, duration, slide_dir, slide_theme):
         """Renders a slide with icon for a scene in GUI worker."""
@@ -803,12 +841,14 @@ class ConfigPanel(QWidget):
         self.combo_visual_source = QComboBox()
         self.combo_visual_source.addItems([
             "Pexels (Stock Videos)",
+            "Pexels (Stock Images)",
             "Slides (Simple)",
             "Slides (with AI SVG)",
         ])
         self.combo_visual_source.setToolTip(
             "Choose the visual source for the video:\n"
-            "  - Pexels: Stock videos from Pexels API\n"
+            "  - Pexels (Stock Videos): Downloaded stock video clips\n"
+            "  - Pexels (Stock Images): Photos with Ken Burns zoom effect\n"
             "  - Slides (Simple): AI-generated slides with text only\n"
             "  - Slides (with AI SVG): AI-generated slides with SVG illustrations"
         )
@@ -1123,9 +1163,9 @@ class ConfigPanel(QWidget):
             self.edit_output.setText(path)
 
     def _on_visual_source_changed(self, index: int):
-        is_slides = index > 0
+        is_slides = index in (2, 3)
         self.combo_slide_theme.setVisible(is_slides)
-        self.lbl_theme_warning.setVisible(index == 2)
+        self.lbl_theme_warning.setVisible(index == 3)
 
     def get_config(self) -> dict | None:
         """Validates and returns the current configuration. Returns None on errors."""
@@ -1141,8 +1181,9 @@ class ConfigPanel(QWidget):
 
         visual_source_map = {
             0: "pexels",
-            1: "slides_simple",
-            2: "slides_svg",
+            1: "pexels_images",
+            2: "slides_simple",
+            3: "slides_svg",
         }
         visual_source = visual_source_map.get(self.combo_visual_source.currentIndex(), "pexels")
 
@@ -1154,7 +1195,7 @@ class ConfigPanel(QWidget):
         slide_theme = theme_map.get(self.combo_slide_theme.currentText(), "tokyo_night")
 
         pexels_key = self.edit_pexels.text().strip()
-        if visual_source == "pexels" and not pexels_key:
+        if visual_source in ("pexels", "pexels_images") and not pexels_key:
             return None
 
         fps_map = {"24 fps": 24, "30 fps": 30, "60 fps": 60}
@@ -1272,8 +1313,8 @@ class ConfigPanel(QWidget):
                 errors.append("No JSON file has been selected.")
 
         visual_source_idx = self.combo_visual_source.currentIndex()
-        if visual_source_idx == 0 and not self.edit_pexels.text().strip():
-            errors.append("Pexels API Key is required when using Pexels videos.")
+        if visual_source_idx in (0, 1) and not self.edit_pexels.text().strip():
+            errors.append("Pexels API Key is required when using Pexels.")
 
         if not self.edit_output.text().strip():
             errors.append("Specify an output path for the video.")

@@ -184,3 +184,19 @@ On validation failure: show error message in status bar, disable "Generate Video
 - Scene reordering in UI
 - Per-scene overrides beyond `generate_svg`
 - Multiple visual sources in one scene (forced choice, no mix)
+
+## 9. Related Feature: Pexels Images
+
+A parallel feature adds **Pexels Images** as a visual source option alongside videos.
+This shares the same JSON `video_query` field for searching.
+
+**Implementation:**
+- New `VISUAL_PEXELS_IMAGES = "pexels_images"` constant
+- `PEXELS_PHOTOS_API_URL = "https://api.pexels.com/photos/search"`
+- `search_pexels_image()` — searches and returns best photo URL
+- `search_and_download_image()` — downloads photo to disk
+- `assemble_image_scene()` — creates video from image with Ken Burns effect
+  - Zoom: 1.0 → 1.15x over audio duration (alternating in/out per scene)
+  - Single encode pass with audio mixing
+- GUI: new "Pexels (Stock Images)" option in visual source selector
+- Fallback chain: full query → first two words → first word → generic fallback
