@@ -25,7 +25,8 @@ FreeVi currently generates videos from PDFs by extracting text, sending it to an
       "title": "Optional. Slide title.",
       "content": "Optional. Array of strings for slide bullet points.",
       "icon": "Optional. Icon filename from Tabler Icons (e.g. 'flask.svg').",
-      "generate_svg": "Optional. Boolean, overrides global SVG toggle for this scene."
+      "generate_svg": "Optional. Boolean, overrides global SVG toggle for this scene.",
+      "image": "Optional. Boolean — true for Pexels image, false (or omit) for Pexels video."
     }
   ]
 }
@@ -37,9 +38,10 @@ At least one of `video_query` OR (`title` + `content`) must be present per scene
 
 | Fields present | Visual type |
 |---|---|
-| `video_query` only | Pexels video |
+| `video_query` + `image: false` or omit | Pexels video |
+| `video_query` + `image: true` | Pexels image |
 | `title` + `content` | AI slide |
-| Both | Default to `video_query`; user can override per scene |
+| Both (slides) | Default to `video_query`; slides only if no `video_query` |
 
 ---
 
@@ -150,7 +152,8 @@ if self.input_mode == "json":
 4. Each scene must have at least one of: `video_query`, or (`title` + `content`).
 5. `content` must be an array of strings (or empty).
 6. `generate_svg` must be boolean if present.
-7. `icon` must be a string if present (no validation that file exists — checked at render time).
+7. `image` must be boolean if present.
+8. `icon` must be a string if present (no validation that file exists — checked at render time).
 
 On validation failure: show error message in status bar, disable "Generate Video" button.
 

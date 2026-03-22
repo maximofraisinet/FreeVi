@@ -92,18 +92,19 @@ Instead of feeding a PDF, you can provide a JSON file with your own scenes. Sele
 
 **JSON Format:**
 
-**Example: Pexels Videos**
+**Example: Pexels Videos or Images**
 ```json
 {
   "scenes": [
     {
       "narrator_text": "The universe expands constantly, revealing mysteries beyond our comprehension.",
-      "video_query": "galaxy stars space"
-      // icon and generate_svg are optional and ignored in Pexels mode
+      "video_query": "galaxy stars space",
+      "image": false    // optional — true for images, false (or omit) for videos
     },
     {
       "narrator_text": "Black holes are regions where gravity is so intense that nothing can escape.",
-      "video_query": "black hole animation"
+      "video_query": "black hole animation",
+      "image": true     // optional — this scene will use a Pexels image instead of video
     }
   ]
 }

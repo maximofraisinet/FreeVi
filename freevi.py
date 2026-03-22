@@ -173,6 +173,7 @@ class Scene:
     slide_image_path: str = ""
     slide_icon: str = ""
     image_path: str = ""
+    image: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -193,6 +194,7 @@ class Scene:
             slide_title=data.get("title", ""),
             slide_content=data.get("content", []),
             slide_icon=data.get("icon", ""),
+            image=data.get("image", False),
         )
 
 
@@ -246,6 +248,9 @@ def validate_json_scenes(data: dict) -> tuple[bool, str | None]:
         if "generate_svg" in scene and not isinstance(scene["generate_svg"], bool):
             return False, f"Scene {i + 1}: 'generate_svg' must be a boolean."
 
+        if "image" in scene and not isinstance(scene["image"], bool):
+            return False, f"Scene {i + 1}: 'image' must be a boolean."
+
         if "icon" in scene and scene["icon"] is not None and not isinstance(scene["icon"], str):
             return False, f"Scene {i + 1}: 'icon' must be a string."
 
@@ -270,11 +275,11 @@ def load_scenes_from_json(path: str) -> tuple[list[Scene], str | None]:
 
 
 def detect_scene_type(scene: Scene) -> str:
-    if scene.video_query and not scene.slide_title and not scene.slide_content:
-        return "pexels"
     if scene.slide_title and scene.slide_content:
         return "slides"
     if scene.video_query:
+        if scene.image:
+            return "pexels_images"
         return "pexels"
     return "slides"
 

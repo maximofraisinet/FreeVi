@@ -156,15 +156,15 @@ class JsonFormatDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("JSON Format")
-        self.setMinimumSize(520, 400)
-        self.resize(560, 480)
+        self.setMinimumSize(560, 560)
+        self.resize(620, 620)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
         info = QLabel(
-            "Your JSON file must follow this structure. "
-            "Each scene needs at least <b>video_query</b> or <b>title + content</b>."
+            "Your JSON file must follow one of these structures. "
+            "Choose based on your selected visual source."
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -186,20 +186,40 @@ class JsonFormatDialog(QDialog):
         layout.addWidget(buttons)
 
     def _get_example(self) -> str:
-        return """{
+        return """# Example: Pexels Videos or Images
+# Use with visual source: Pexels (Stock Videos) or Pexels (Stock Images)
+{
   "scenes": [
     {
-      "narrator_text": "Required. Narration text for TTS.",
-      "video_query": "Optional. 2-5 word Pexels search query.",
-      "title": "Optional. Slide title (with content).",
-      "content": ["Optional. Bullet point 1.", "Bullet point 2."],
-      "icon": "Optional. Icon name, e.g. flask.svg",
-      "generate_svg": false
+      "narrator_text": "The universe expands constantly, revealing mysteries beyond our comprehension.",
+      "video_query": "galaxy stars space",
+      "image": false    // optional — true for images, false (or omit) for videos
     },
     {
-      "narrator_text": "Second scene narration...",
-      "title": "Another Topic",
-      "content": ["Point A", "Point B", "Point C"]
+      "narrator_text": "Black holes are regions where gravity is so intense that nothing can escape.",
+      "video_query": "black hole animation",
+      "image": true     // optional
+    }
+  ]
+}
+
+# Example: AI Slides
+# Use with visual source: Slides (Simple) or Slides (with AI SVG)
+{
+  "scenes": [
+    {
+      "narrator_text": "Photosynthesis is the process by which plants convert light into energy.",
+      "title": "Photosynthesis",
+      "content": ["Absorbing sunlight", "Converting to glucose", "Releasing oxygen"],
+      "icon": "leaf.svg",        // optional — icon from Tabler Icons library
+      "generate_svg": false       // optional — set true to also generate an AI SVG illustration
+    },
+    {
+      "narrator_text": "The water cycle describes the continuous movement of water on Earth.",
+      "title": "Water Cycle",
+      "content": ["Evaporation", "Condensation", "Precipitation"],
+      "icon": "droplet.svg",     // optional
+      "generate_svg": true       // optional
     }
   ]
 }"""
@@ -411,16 +431,22 @@ class PipelineWorker(QThread):
             if self._cancel:
                 return
 
-            # Visual content
-            if visual_source == VISUAL_PEXELS:
+            # Visual content — per-scene type in JSON mode, global in PDF mode
+            if cfg.get("input_mode") == "json" and visual_source in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES):
+                use_image = getattr(scene, "image", False)
+                scene_vs = VISUAL_PEXELS_IMAGES if use_image else VISUAL_PEXELS
+            else:
+                scene_vs = visual_source
+
+            if scene_vs == VISUAL_PEXELS:
                 self._process_pexels_scene_gui(
                     scene, duration, pexels_key, cfg, temp_dir, used_video_urls
                 )
-            elif visual_source == VISUAL_PEXELS_IMAGES:
+            elif scene_vs == VISUAL_PEXELS_IMAGES:
                 self._process_pexels_image_scene_gui(
                     scene, pexels_key, cfg, temp_dir, used_video_urls
                 )
-            elif visual_source == VISUAL_SLIDES_SVG:
+            elif scene_vs == VISUAL_SLIDES_SVG:
                 self._process_slide_svg_scene_gui(
                     scene, duration, cfg, slide_dir, slide_theme
                 )
@@ -439,11 +465,10 @@ class PipelineWorker(QThread):
             )
             scene_path = os.path.join(temp_dir, f"scene_{num:02d}_final.mp4")
 
-            if visual_source == VISUAL_PEXELS:
+            if scene_vs == VISUAL_PEXELS:
                 assemble_scene_from_raw(scene.video_path, audio_path, duration, scene_path)
-            elif visual_source == VISUAL_PEXELS_IMAGES:
-                zoom_in = scene.number % 2 == 1
-                assemble_image_scene(scene.image_path, audio_path, duration, scene_path, zoom_in)
+            elif scene_vs == VISUAL_PEXELS_IMAGES:
+                assemble_image_scene(scene.image_path, audio_path, duration, scene_path, True)
             else:
                 assemble_slide_scene(scene.slide_image_path, audio_path, duration, scene_path)
 
