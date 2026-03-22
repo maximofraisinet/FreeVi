@@ -140,6 +140,9 @@ Each scene needs at least `video_query` **or** `title` + `content`. Add as many 
 # Basic example (uses Pexels videos by default)
 python freevi.py document.pdf
 
+# Use Pexels images (static photos) instead of videos
+python freevi.py document.pdf --visual-source pexels_images
+
 # Use AI slides instead of videos
 python freevi.py document.pdf --visual-source slides_simple --slide-theme executive
 
@@ -184,28 +187,28 @@ python freevi.py document.pdf --visual-source slides_svg --slide-theme tokyo_nig
                     │  PDF  ──or──   JSON file   │
                     └───────────┬─────────────────┘
                                 ↓
-              ┌─────────────────┴─────────────────┐
-              ↓                                   ↓
-      PDF Path (LLM)                    JSON Path (direct)
-              ↓                                   ↓
-   Text Extraction                    Load scenes directly
+              ┌────────────────┴────────────────┐
+              ↓                                 ↓
+      PDF Path (LLM)                   JSON Path (direct)
+              ↓                                 ↓
+   Text Extraction                   Load scenes directly
               ↓
-   LLM Script Generation                     
-              ↓                                   ↓
-              └──────────────┬────────────────────┘
+   LLM Script Generation
+              ↓                                 ↓
+              └──────────────┬──────────────────┘
                              ↓
                       TTS Audio
                              ↓
-           ┌────────────────┴────────────────┐
-           ↓                                 ↓
-    Pexels Videos                     AI Slides
-    (Download)                      (Generate)
-           ↓                                 ↓
-           └──────────────┬────────────────────┘
-                          ↓
-                     MoviePy
-                          ↓
-                    Final Video
+        ┌────────────────────┴────────────────────┐
+        ↓                   ↓                    ↓
+ Pexels Videos       Pexels Images       AI Slides
+ (Download)          (Download)          (Generate)
+        ↓                   ↓                    ↓
+        └────────────────────┴────────────────────┘
+                             ↓
+                        MoviePy
+                             ↓
+                      Final Video
 ```
 
 ## Dependencies

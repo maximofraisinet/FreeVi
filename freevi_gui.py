@@ -858,9 +858,9 @@ class ConfigPanel(QWidget):
         layout.addWidget(grp_video)
 
         # ── 4b. Visual Source ──
-        grp_visual = QGroupBox("Visual Source")
-        grp_visual.setObjectName("groupbox")
-        lay_visual = QGridLayout(grp_visual)
+        self.grp_visual = QGroupBox("Visual Source")
+        self.grp_visual.setObjectName("groupbox")
+        lay_visual = QGridLayout(self.grp_visual)
         lay_visual.setSpacing(8)
 
         self.combo_visual_source = QComboBox()
@@ -895,7 +895,7 @@ class ConfigPanel(QWidget):
         lay_visual.addWidget(QLabel("Slide theme:"), 1, 0)
         lay_visual.addWidget(self.combo_slide_theme, 1, 1)
         lay_visual.addWidget(self.lbl_theme_warning, 2, 0, 1, 2)
-        layout.addWidget(grp_visual)
+        layout.addWidget(self.grp_visual)
 
         # ── 5. API Keys ──
         grp_api = QGroupBox("API Keys")
@@ -996,17 +996,17 @@ class ConfigPanel(QWidget):
 
     def _set_input_mode(self):
         if self.radio_pdf.isChecked():
-            mode = "pdf"
             self.grp_pdf.setVisible(True)
             self.grp_json.setVisible(False)
             self.grp_llm.setVisible(True)
             self.grp_prompt.setVisible(True)
+            self.grp_visual.setVisible(True)
         else:
-            mode = "json"
             self.grp_pdf.setVisible(False)
             self.grp_json.setVisible(True)
             self.grp_llm.setVisible(False)
             self.grp_prompt.setVisible(False)
+            self.grp_visual.setVisible(False)
 
     def _select_json(self):
         path, _ = QFileDialog.getOpenFileName(
