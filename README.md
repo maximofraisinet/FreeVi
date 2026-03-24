@@ -19,6 +19,7 @@ FreeVi transforms PDF documents into dynamic audiovisual narratives. Choose betw
   - **Pexels Images:** Stock photos with Ken Burns (pan & zoom) effect.
   - **AI Slides (Simple):** Clean, themed presentations with text and icons.
   - **AI Slides (with SVG):** Presentations with AI-generated geometric illustrations and icons.
+- **Dynamic Subtitles:** Choose between fast sentence-level captions or "Pro" word-level sync powered by Whisper AI (perfect for vertical Shorts/Reels).
 - **Smart Icon Selection:** 6,000+ icons from Tabler Icons, automatically selected based on content.
 - **Smart Processing:** Local LLM (Ollama) adapts text into natural narration scripts.
 - **Natural Voices:** Multilingual TTS using Kokoro ONNX.
@@ -84,6 +85,7 @@ The GUI lets you select:
 - **Input Mode:** "From PDF" (LLM generates the script) or "From JSON" (use your own scenes)
 - **Visual Source:** Pexels (Videos), Slides (Simple), or Slides (with AI SVG)
 - **Slide Theme:** Tokyo Night, Executive, or Minimal
+- **Subtitles:** Position, Sync Method (Fast/Pro), and Max Words per chunk.
 - All other options (voice, language, resolution, etc.)
 
 ### JSON Import
@@ -139,6 +141,9 @@ Each scene needs at least `video_query` **or** `title` + `content`. Add as many 
 ```bash
 # Basic example (uses Pexels videos by default)
 python freevi.py document.pdf
+
+# Add dynamic "Pro" subtitles (Word-level sync, 2 words max per screen)
+python freevi.py document.pdf --subtitles middle --subtitle-sync pro --subtitle-max-words 2
 
 # Use Pexels images (static photos) instead of videos
 python freevi.py document.pdf --visual-source pexels_images
@@ -216,6 +221,7 @@ python freevi.py document.pdf --visual-source slides_svg --slide-theme tokyo_nig
 Built with:
 - [Ollama](https://ollama.ai/) - Local LLM inference
 - [Kokoro](https://github.com/hexgrad/kokoro) - Text-to-Speech
+- [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) - Word-level subtitle synchronization
 - [Pexels API](https://www.pexels.com/api/) - Stock videos
 - [PyMuPDF](https://pymupdf.readthedocs.io/) - PDF processing
 - [MoviePy](https://zulko.github.io/moviepy/) - Video editing
