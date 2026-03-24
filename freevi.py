@@ -1257,14 +1257,15 @@ class AudioEngine:
         Returns a list of {"word": str, "start": float, "end": float} with the
         original text words (not Whisper's potentially erroneous transcription).
         """
-        original_words = re.findall(r'\b\w+\b|[^\w\s]', original_text.lower())
-        whisper_texts = [w["word"].lower().strip() for w in whisper_words]
+        original_words = re.findall(r'\b\w+\S*', original_text.lower())
+        original_words_clean = [re.sub(r'[^\w]', '', w) for w in original_words]
+        whisper_texts = [re.sub(r'[^\w]', '', w["word"].lower().strip()) for w in whisper_words]
 
         if not original_words or not whisper_texts:
             log.warning("  No words to align, falling back to sentence-level timing")
             return []
 
-        matcher = difflib.SequenceMatcher(None, whisper_texts, original_words)
+        matcher = difflib.SequenceMatcher(None, whisper_texts, original_words_clean)
         aligned = []
 
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -1314,9 +1315,16 @@ class AudioEngine:
         """
         Groups aligned words into subtitle chunks (2-4 words each).
         Each chunk is suitable for display in vertical videos.
+        
+        Forces a chunk cut at punctuation marks (.,;:!?) to match natural speech pauses.
+        Cleans up punctuation (except ?) from the final display text.
         """
         if not aligned_words:
             return []
+
+        def _clean_text_for_display(text: str) -> str:
+            text = re.sub(r'[.,;:!¡¿]', '', text)
+            return text.strip()
 
         chunks = []
         current_chunk = []
@@ -1327,8 +1335,18 @@ class AudioEngine:
             chunk_end = word_data["end"]
             chunk_duration = chunk_end - chunk_start
 
-            if len(current_chunk) >= max_words or chunk_duration >= max_duration:
+            current_word = word_data["word"]
+            ends_with_punct = current_word.endswith(('.', ',', ';', ':', '!', '?', '¿', '¡'))
+
+            should_cut = (
+                len(current_chunk) >= max_words or 
+                chunk_duration >= max_duration or 
+                ends_with_punct
+            )
+
+            if should_cut:
                 chunk_text = " ".join(w["word"] for w in current_chunk)
+                chunk_text = _clean_text_for_display(chunk_text)
                 chunks.append({
                     "text": chunk_text,
                     "start": round(chunk_start, 3),
@@ -1340,6 +1358,7 @@ class AudioEngine:
 
         if current_chunk:
             chunk_text = " ".join(w["word"] for w in current_chunk)
+            chunk_text = _clean_text_for_display(chunk_text)
             chunks.append({
                 "text": chunk_text,
                 "start": round(chunk_start, 3),
