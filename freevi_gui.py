@@ -428,10 +428,11 @@ class PipelineWorker(QThread):
 
             # Audio
             audio_path = os.path.join(temp_dir, f"scene_{num:02d}_audio.wav")
-            duration = audio_engine.generate_audio(scene.narrator_text, audio_path)
+            duration, subtitle_timings = audio_engine.generate_audio(scene.narrator_text, audio_path)
             scene.audio_path = audio_path
             scene.audio_duration = duration
-            self.log_msg.emit(f"  Audio: {duration:.2f}s", "INFO")
+            scene.subtitle_timings = subtitle_timings
+            self.log_msg.emit(f"  Audio: {duration:.2f}s, {len(subtitle_timings)} subtitle(s)", "INFO")
             if self._cancel:
                 return
 
@@ -469,12 +470,27 @@ class PipelineWorker(QThread):
             )
             scene_path = os.path.join(temp_dir, f"scene_{num:02d}_final.mp4")
 
+            subtitle_position = cfg.get("subtitle_position")
+            has_subtitles = subtitle_position and subtitle_timings
+
             if scene_vs == VISUAL_PEXELS:
-                assemble_scene_from_raw(scene.video_path, audio_path, duration, scene_path)
+                assemble_scene_from_raw(
+                    scene.video_path, audio_path, duration, scene_path,
+                    subtitle_timings=has_subtitles and subtitle_timings,
+                    subtitle_position=subtitle_position,
+                )
             elif scene_vs == VISUAL_PEXELS_IMAGES:
-                assemble_image_scene(scene.image_path, audio_path, duration, scene_path, True)
+                assemble_image_scene(
+                    scene.image_path, audio_path, duration, scene_path, True,
+                    subtitle_timings=has_subtitles and subtitle_timings,
+                    subtitle_position=subtitle_position,
+                )
             else:
-                assemble_slide_scene(scene.slide_image_path, audio_path, duration, scene_path)
+                assemble_slide_scene(
+                    scene.slide_image_path, audio_path, duration, scene_path,
+                    subtitle_timings=has_subtitles and subtitle_timings,
+                    subtitle_position=subtitle_position,
+                )
 
             final_paths.append(scene_path)
             self.log_msg.emit(f"  Scene {num} complete.", "INFO")
@@ -901,6 +917,26 @@ class ConfigPanel(QWidget):
         lay_visual.addWidget(self.lbl_theme_warning, 2, 0, 1, 2)
         layout.addWidget(self.grp_visual)
 
+        # ── Subtitles ──
+        grp_subtitles = QGroupBox("Subtitles")
+        grp_subtitles.setObjectName("groupbox")
+        lay_subtitles = QGridLayout(grp_subtitles)
+        lay_subtitles.setSpacing(8)
+
+        self.combo_subtitles = QComboBox()
+        self.combo_subtitles.addItems(["None", "Bottom", "Middle", "Top"])
+        self.combo_subtitles.setToolTip(
+            "Add subtitles to the video:\n"
+            "  - None: No subtitles\n"
+            "  - Bottom: Subtitles at the bottom\n"
+            "  - Middle: Subtitles in the center\n"
+            "  - Top: Subtitles at the top"
+        )
+
+        lay_subtitles.addWidget(QLabel("Position:"), 0, 0)
+        lay_subtitles.addWidget(self.combo_subtitles, 0, 1)
+        layout.addWidget(grp_subtitles)
+
         # ── 5. API Keys ──
         grp_api = QGroupBox("API Keys")
         grp_api.setObjectName("groupbox")
@@ -1247,6 +1283,8 @@ class ConfigPanel(QWidget):
             "custom_instructions": self.txt_prompt.toPlainText(),
             "visual_source": visual_source,
             "slide_theme": slide_theme,
+            "subtitle_position": {0: None, 1: "bottom", 2: "middle", 3: "top"}.get(self.combo_subtitles.currentIndex()),
+            "input_mode": "json" if self.radio_json.isChecked() else "pdf",
         }
 
     def load_from_config(self, cfg: dict) -> None:
@@ -1326,6 +1364,18 @@ class ConfigPanel(QWidget):
         idx = self.combo_slide_theme.findText(theme_name)
         if idx >= 0:
             self.combo_slide_theme.setCurrentIndex(idx)
+
+        # Subtitles position
+        subtitle_pos_map = {None: 0, "bottom": 1, "middle": 2, "top": 3}
+        idx = subtitle_pos_map.get(cfg.get("subtitle_position"), 0)
+        self.combo_subtitles.setCurrentIndex(idx)
+
+        # Input mode (PDF/JSON)
+        if cfg.get("input_mode") == "json":
+            self.radio_json.setChecked(True)
+        else:
+            self.radio_pdf.setChecked(True)
+        self._set_input_mode()
 
     def validation_errors(self) -> list[str]:
         """Returns a list of validation errors."""

@@ -1194,7 +1194,7 @@ class AudioEngine:
             )
         return samples, sample_rate
 
-    def generate_audio(self, text: str, output_path: str) -> float:
+    def generate_audio(self, text: str, output_path: str) -> tuple[float, list[dict]]:
         """
         Generates a .wav file from text in the configured language.
 
@@ -1212,7 +1212,8 @@ class AudioEngine:
             output_path: Path where the .wav file will be saved.
 
         Returns:
-            Exact audio duration in seconds.
+            A tuple of (exact audio duration in seconds, subtitle timings list).
+            Each timing is a dict: {"text": str, "start": float, "end": float}
         """
         self._initialize()
         text = self._clean_tts_text(text)
@@ -1222,14 +1223,29 @@ class AudioEngine:
             log.info(f"  [Audio] {len(sentences)} sentence(s) to synthesise")
 
             all_chunks: list[np.ndarray] = []
-            sample_rate: int = 24000   # Kokoro default; overwritten on first call
+            sample_rate: int = 24000
+            timings: list[dict] = []
+            current_time: float = 0.0
 
             for fragment, pause in sentences:
                 samples, sample_rate = self._synth(fragment)
+                chunk_duration = len(samples) / sample_rate
+                start_time = current_time
+                end_time = current_time + chunk_duration
+
+                timings.append({
+                    "text": fragment,
+                    "start": round(start_time, 3),
+                    "end": round(end_time, 3),
+                })
+
                 all_chunks.append(samples)
+                current_time = end_time
+
                 if pause > 0.0:
                     silence_samples = int(pause * sample_rate)
                     all_chunks.append(np.zeros(silence_samples, dtype=samples.dtype))
+                    current_time += pause
 
             final_samples = np.concatenate(all_chunks) if all_chunks else np.zeros(0)
 
@@ -1240,7 +1256,7 @@ class AudioEngine:
                 f"  Audio generated: {duration:.2f}s "
                 f"({len(final_samples)} samples @ {sample_rate}Hz)"
             )
-            return duration
+            return duration, timings
 
         except Exception as e:
             raise RuntimeError(f"Error generating audio with Kokoro: {e}")
@@ -1653,11 +1669,123 @@ def download_pexels_photo(url: str, output_path: str) -> bool:
 # ---------------------------------------------------------------------------
 # 5. ASSEMBLY MODULE (MoviePy)
 # ---------------------------------------------------------------------------
+import textwrap
+from PIL import Image, ImageDraw, ImageFont
+
+
+def _create_subtitle_image(
+    text: str,
+    width: int,
+    height: int,
+    font_size: int,
+    position: str,
+) -> Image.Image:
+    """
+    Creates a transparent PIL Image with styled subtitle text.
+    """
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    font_path = None
+    font_candidates = [
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+    for fp in font_candidates:
+        if os.path.exists(fp):
+            font_path = fp
+            break
+
+    if font_path:
+        font = ImageFont.truetype(font_path, font_size)
+    else:
+        font = ImageFont.load_default()
+
+    wrap_width = max(25, int(width / (font_size * 0.55)))
+    wrapped = textwrap.fill(text, width=wrap_width)
+    lines = wrapped.split("\n")
+    line_height = font_size + 8
+    text_height = len(lines) * line_height
+    
+    margin = int(width * 0.05)
+    max_text_width = width - (margin * 2)
+    
+    processed_lines = []
+    for line in lines:
+        while draw.textbbox((0, 0), line, font=font)[2] > max_text_width:
+            words = line.split()
+            if len(words) <= 1:
+                break
+            half = len(words) // 2
+            line = " ".join(words[:half])
+            processed_lines.append(line)
+            remaining = " ".join(words[half:])
+            line = remaining
+        processed_lines.append(line)
+    
+    lines = processed_lines
+    
+    text_width = max(draw.textbbox((0, 0), line, font=font)[2] for line in lines) if lines else 0
+
+    if position == "top":
+        y = int(height * 0.12)
+    elif position == "middle":
+        y = (height - text_height) // 2
+    else:
+        y = int(height * 0.87) - text_height
+
+    x = margin
+
+    for line in lines:
+        line_width = draw.textbbox((0, 0), line, font=font)[2]
+        x_line = (width - line_width) // 2
+        draw.text((x_line, y), line, font=font, fill=(255, 255, 255, 255), stroke_width=3, stroke_fill=(0, 0, 0, 255))
+        y += line_height
+
+    return img
+
+
+def _create_subtitle_clips(
+    timings: list[dict],
+    width: int,
+    height: int,
+    position: str,
+) -> list:
+    """
+    Creates a list of MoviePy ImageClips for subtitles.
+    """
+    from moviepy import ImageClip
+
+    font_size = max(int(height * 0.045), 24)
+    clips = []
+
+    for timing in timings:
+        text = timing["text"]
+        start = timing["start"]
+        end = timing["end"]
+
+        pil_img = _create_subtitle_image(text, width, height, font_size, position)
+        import numpy as np
+        img_array = np.array(pil_img)
+
+        clip = ImageClip(img_array).with_duration(end - start).with_start(start)
+        clips.append(clip)
+
+    return clips
+
+
 def assemble_scene_from_raw(
     raw_video_path: str,
     audio_path: str,
     target_duration: float,
     output_path: str,
+    subtitle_timings: list[dict] | None = None,
+    subtitle_position: str | None = None,
 ) -> str:
     """
     Trims/loops the raw stock video to the exact audio duration, resizes it,
@@ -1673,10 +1801,14 @@ def assemble_scene_from_raw(
         audio_path: Path to the .wav audio file for this scene.
         target_duration: Exact audio duration in seconds.
         output_path: Path for the finished scene video file (video + audio).
+        subtitle_timings: Optional list of {"text": str, "start": float, "end": float}.
+        subtitle_position: Optional position ("top", "middle", "bottom").
 
     Returns:
         Path to the assembled scene video (same as output_path).
     """
+    from moviepy import CompositeVideoClip
+
     clip = VideoFileClip(raw_video_path)
     audio = AudioFileClip(audio_path)
 
@@ -1696,6 +1828,13 @@ def assemble_scene_from_raw(
     w, h = adjusted.size
     if w != TARGET_WIDTH or h != TARGET_HEIGHT:
         adjusted = adjusted.resized(new_size=(TARGET_WIDTH, TARGET_HEIGHT))
+
+    # Add subtitles if provided
+    if subtitle_timings and subtitle_position:
+        subtitle_clips = _create_subtitle_clips(
+            subtitle_timings, TARGET_WIDTH, TARGET_HEIGHT, subtitle_position
+        )
+        adjusted = CompositeVideoClip([adjusted] + subtitle_clips)
 
     # Set FPS and attach audio — single encode pass
     adjusted = adjusted.with_fps(TARGET_FPS).with_audio(audio)
@@ -2028,6 +2167,8 @@ def assemble_image_scene(
     duration: float,
     output_path: str,
     zoom_in: bool = True,
+    subtitle_timings: list[dict] | None = None,
+    subtitle_position: str | None = None,
 ) -> str:
     """
     Creates a video clip from a Pexels photo and mixes in the audio.
@@ -2038,10 +2179,14 @@ def assemble_image_scene(
         duration: Exact duration in seconds (from audio).
         output_path: Output video path.
         zoom_in: Unused, kept for API compatibility.
+        subtitle_timings: Optional list of {"text": str, "start": float, "end": float}.
+        subtitle_position: Optional position ("top", "middle", "bottom").
 
     Returns:
         Path to the assembled video.
     """
+    from moviepy import CompositeVideoClip, ImageClip
+
     tmp_video = output_path + ".tmp_img.mp4"
     tmp_audio = output_path + ".tmp_audio.m4a"
 
@@ -2076,6 +2221,22 @@ def assemble_image_scene(
     Path(tmp_video).unlink(missing_ok=True)
     Path(tmp_audio).unlink(missing_ok=True)
 
+    if subtitle_timings and subtitle_position:
+        video = VideoFileClip(output_path)
+        subtitle_clips = _create_subtitle_clips(
+            subtitle_timings, TARGET_WIDTH, TARGET_HEIGHT, subtitle_position
+        )
+        final = CompositeVideoClip([video] + subtitle_clips)
+        final.write_videofile(
+            output_path,
+            codec="libx264",
+            audio_codec="aac",
+            preset=TARGET_PRESET,
+            logger=None,
+        )
+        video.close()
+        final.close()
+
     log.info(f"  Image scene assembled: {output_path}")
     return output_path
 
@@ -2085,6 +2246,8 @@ def assemble_slide_scene(
     audio_path: str,
     duration: float,
     output_path: str,
+    subtitle_timings: list[dict] | None = None,
+    subtitle_position: str | None = None,
 ) -> str:
     """
     Creates a video clip from a slide image and audio file.
@@ -2094,11 +2257,13 @@ def assemble_slide_scene(
         audio_path: Path to the audio WAV.
         duration: Duration in seconds (from audio).
         output_path: Output video path.
+        subtitle_timings: Optional list of {"text": str, "start": float, "end": float}.
+        subtitle_position: Optional position ("top", "middle", "bottom").
 
     Returns:
         Path to the assembled video.
     """
-    from moviepy import AudioFileClip, ImageClip, concatenate_videoclips
+    from moviepy import AudioFileClip, CompositeVideoClip, ImageClip
 
     img_clip = ImageClip(slide_image_path).with_duration(duration)
     audio = AudioFileClip(audio_path)
@@ -2107,7 +2272,15 @@ def assemble_slide_scene(
     img_clip = img_clip.resized(new_size=(TARGET_WIDTH, TARGET_HEIGHT))
     img_clip = img_clip.with_fps(TARGET_FPS)
 
-    img_clip.write_videofile(
+    if subtitle_timings and subtitle_position:
+        subtitle_clips = _create_subtitle_clips(
+            subtitle_timings, TARGET_WIDTH, TARGET_HEIGHT, subtitle_position
+        )
+        final_clip = CompositeVideoClip([img_clip] + subtitle_clips)
+    else:
+        final_clip = img_clip
+
+    final_clip.write_videofile(
         output_path,
         codec="libx264",
         audio_codec="aac",
@@ -2117,6 +2290,8 @@ def assemble_slide_scene(
 
     audio.close()
     img_clip.close()
+    if subtitle_timings and subtitle_position:
+        final_clip.close()
 
     log.info(f"  Slide scene assembled: {output_path}")
     return output_path
@@ -2150,6 +2325,7 @@ class VideoGenerator:
         orientation: str = "landscape",
         visual_source: str = VISUAL_PEXELS,
         slide_theme: str = "tokyo_night",
+        subtitle_position: str | None = None,
     ):
         self.pdf_path = pdf_path
         self.llm_model = llm_model
@@ -2160,6 +2336,7 @@ class VideoGenerator:
         self.orientation = orientation
         self.visual_source = visual_source
         self.slide_theme_name = slide_theme
+        self.subtitle_position = subtitle_position
         self.audio_engine = AudioEngine(
             voice=voice, speed=voice_speed, lang_code=lang_code,
         )
@@ -2237,10 +2414,11 @@ class VideoGenerator:
             audio_path = os.path.join(
                 self.temp_dir, f"scene_{scene.number:02d}_audio.wav"
             )
-            duration = self.audio_engine.generate_audio(scene.narrator_text, audio_path)
+            duration, subtitle_timings = self.audio_engine.generate_audio(scene.narrator_text, audio_path)
             scene.audio_path = audio_path
             scene.audio_duration = duration
-            log.info(f"  [Audio] Exact duration: {duration:.3f} seconds")
+            scene.subtitle_timings = subtitle_timings
+            log.info(f"  [Audio] Exact duration: {duration:.3f} seconds, {len(subtitle_timings)} subtitle(s)")
 
             # ── 3b: Visual content based on visual_source ──
             if self.visual_source == VISUAL_PEXELS:
@@ -2260,16 +2438,22 @@ class VideoGenerator:
 
             if self.visual_source == VISUAL_PEXELS:
                 assemble_scene_from_raw(
-                    scene.video_path, audio_path, duration, scene_final_path
+                    scene.video_path, audio_path, duration, scene_final_path,
+                    subtitle_timings=getattr(self, 'subtitle_position', None) and scene.subtitle_timings,
+                    subtitle_position=getattr(self, 'subtitle_position', None),
                 )
             elif self.visual_source == VISUAL_PEXELS_IMAGES:
                 zoom_in = scene.number % 2 == 1
                 assemble_image_scene(
-                    scene.image_path, audio_path, duration, scene_final_path, zoom_in
+                    scene.image_path, audio_path, duration, scene_final_path, zoom_in,
+                    subtitle_timings=getattr(self, 'subtitle_position', None) and scene.subtitle_timings,
+                    subtitle_position=getattr(self, 'subtitle_position', None),
                 )
             else:
                 assemble_slide_scene(
-                    scene.slide_image_path, audio_path, duration, scene_final_path
+                    scene.slide_image_path, audio_path, duration, scene_final_path,
+                    subtitle_timings=getattr(self, 'subtitle_position', None) and scene.subtitle_timings,
+                    subtitle_position=getattr(self, 'subtitle_position', None),
                 )
 
             final_scene_paths.append(scene_final_path)
@@ -2504,6 +2688,12 @@ Prerequisites:
         choices=["tokyo_night", "executive", "minimal"],
         help="Slide theme when using slides (default: tokyo_night)",
     )
+    parser.add_argument(
+        "--subtitles",
+        default=None,
+        choices=["bottom", "middle", "top"],
+        help="Subtitle position: bottom, middle, or top (default: None = no subtitles)",
+    )
 
     args = parser.parse_args()
 
@@ -2520,6 +2710,7 @@ Prerequisites:
     log.info(f"  Visual:       {args.visual_source}")
     if args.visual_source != VISUAL_PEXELS:
         log.info(f"  Slide theme:  {args.slide_theme}")
+    log.info(f"  Subtitles:    {args.subtitles or 'None'}")
     log.info(f"  Output:       {args.output}")
     log.info("=" * 60)
 
@@ -2535,6 +2726,7 @@ Prerequisites:
             lang_code=args.lang,
             visual_source=args.visual_source,
             slide_theme=args.slide_theme,
+            subtitle_position=args.subtitles,
         )
         final_path = generator.run()
         log.info(f"\nVideo generated successfully: {final_path}")

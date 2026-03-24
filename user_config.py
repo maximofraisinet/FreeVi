@@ -44,6 +44,8 @@ DEFAULTS: dict = {
     "lang_code":           "a",
     "visual_source":       "pexels",
     "slide_theme":         "tokyo_night",
+    "subtitle_position":   None,
+    "input_mode":          "pdf",
 }
 
 
@@ -141,6 +143,8 @@ def save(config: dict) -> None:
         "lang_code":           config.get("lang_code",           DEFAULTS["lang_code"]),
         "visual_source":       config.get("visual_source",      DEFAULTS["visual_source"]),
         "slide_theme":         config.get("slide_theme",        DEFAULTS["slide_theme"]),
+        "subtitle_position":   config.get("subtitle_position",  DEFAULTS["subtitle_position"]),
+        "input_mode":          config.get("input_mode",         DEFAULTS["input_mode"]),
     }
     _write(_config_path(), to_save)
 
@@ -187,5 +191,11 @@ def save_from_panel(panel) -> None:
 
     theme_map = {"Tokyo Night": "tokyo_night", "Executive": "executive", "Minimal": "minimal"}
     raw["slide_theme"] = theme_map.get(panel.combo_slide_theme.currentText(), "tokyo_night")
+
+    subtitle_idx = panel.combo_subtitles.currentIndex()
+    subtitle_map = {0: None, 1: "bottom", 2: "middle", 3: "top"}
+    raw["subtitle_position"] = subtitle_map.get(subtitle_idx)
+
+    raw["input_mode"] = "json" if panel.radio_json.isChecked() else "pdf"
 
     save(raw)
