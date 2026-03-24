@@ -1,4 +1,5 @@
 import argparse
+import difflib
 import json
 import logging
 import os
@@ -1005,6 +1006,10 @@ class AudioEngine:
     English, British English, Spanish, French, Hindi, Italian, Portuguese)
     it uses ``misaki.espeak.EspeakG2P`` for phonemization.  For Japanese
     and Mandarin Chinese it falls back to Kokoro's built-in G2P.
+
+    Supports two subtitle sync methods:
+      - "fast": Sentence-level timing (default, fast)
+      - "pro": Word-level timing using Whisper (slower but better for vertical videos)
     """
 
     def __init__(
@@ -1012,6 +1017,7 @@ class AudioEngine:
         voice: str = "af_heart",
         speed: float = 1.0,
         lang_code: str = "",
+        subtitle_method: str = "fast",
     ):
         """
         Initializes the audio engine.
@@ -1021,12 +1027,15 @@ class AudioEngine:
             speed: Speech speed (1.0 = normal).
             lang_code: Kokoro single-char language code (``a``, ``e``, …).
                        If empty, inferred from the voice prefix.
+            subtitle_method: "fast" for sentence-level, "pro" for word-level with Whisper.
         """
         self.voice = voice
         self.speed = speed
         self.lang_code = lang_code or get_lang_code_for_voice(voice)
+        self.subtitle_method = subtitle_method
         self.kokoro = None
         self.g2p = None
+        self._whisper_model = None
 
     def _initialize(self):
         """Loads the Kokoro model and the appropriate G2P module (lazy)."""
@@ -1194,6 +1203,152 @@ class AudioEngine:
             )
         return samples, sample_rate
 
+    def _get_whisper_model(self):
+        """
+        Lazily loads the Whisper model (tiny version for speed).
+        Downloads on first use (~75MB).
+        """
+        if self._whisper_model is not None:
+            return self._whisper_model
+
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError:
+            raise ImportError(
+                "faster-whisper is required for Pro subtitle sync. "
+                "Install it with: pip install faster-whisper"
+            )
+
+        log.info("  Loading Whisper model (tiny, ~75MB, first-time download)...")
+        self._whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        log.info("  Whisper model loaded.")
+        return self._whisper_model
+
+    def _transcribe_with_whisper(self, audio_path: str) -> list[dict]:
+        """
+        Uses Whisper to get word-level timestamps from the audio.
+        Returns a list of {"word": str, "start": float, "end": float}.
+        """
+        model = self._get_whisper_model()
+        segments, info = model.transcribe(audio_path, word_timestamps=True)
+
+        words = []
+        for segment in segments:
+            if segment.words:
+                for word in segment.words:
+                    words.append({
+                        "word": word.word.strip(),
+                        "start": word.start,
+                        "end": word.end,
+                    })
+
+        log.info(f"  Whisper detected {len(words)} words")
+        return words
+
+    def _align_text_to_whisper(
+        self,
+        original_text: str,
+        whisper_words: list[dict],
+    ) -> list[dict]:
+        """
+        Aligns the original text to Whisper's word timings using difflib.
+        This corrects Whisper's transcription errors while keeping exact timings.
+
+        Returns a list of {"word": str, "start": float, "end": float} with the
+        original text words (not Whisper's potentially erroneous transcription).
+        """
+        original_words = re.findall(r'\b\w+\b|[^\w\s]', original_text.lower())
+        whisper_texts = [w["word"].lower().strip() for w in whisper_words]
+
+        if not original_words or not whisper_texts:
+            log.warning("  No words to align, falling back to sentence-level timing")
+            return []
+
+        matcher = difflib.SequenceMatcher(None, whisper_texts, original_words)
+        aligned = []
+
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                for idx in range(i2 - i1):
+                    w = whisper_words[i1 + idx]
+                    aligned.append({
+                        "word": original_words[j1 + idx],
+                        "start": w["start"],
+                        "end": w["end"],
+                    })
+            elif tag == "replace":
+                replacements = whisper_words[i1:i2]
+                originals = original_words[j1:j2]
+                if replacements and originals:
+                    total_duration = sum(
+                        r["end"] - r["start"] for r in replacements
+                    )
+                    per_word = total_duration / len(originals)
+                    for idx, orig_word in enumerate(originals):
+                        start = replacements[0]["start"] + (idx * per_word)
+                        end = start + per_word
+                        aligned.append({
+                            "word": orig_word,
+                            "start": start,
+                            "end": end,
+                        })
+            elif tag == "insert":
+                pass
+            elif tag == "delete":
+                for orig_word in original_words[j1:j2]:
+                    if aligned:
+                        aligned.append({
+                            "word": orig_word,
+                            "start": aligned[-1]["end"],
+                            "end": aligned[-1]["end"] + 0.3,
+                        })
+
+        return aligned
+
+    def _chunk_words_for_subtitles(
+        self,
+        aligned_words: list[dict],
+        max_words: int = 4,
+        max_duration: float = 2.0,
+    ) -> list[dict]:
+        """
+        Groups aligned words into subtitle chunks (2-4 words each).
+        Each chunk is suitable for display in vertical videos.
+        """
+        if not aligned_words:
+            return []
+
+        chunks = []
+        current_chunk = []
+        chunk_start = aligned_words[0]["start"]
+
+        for word_data in aligned_words:
+            current_chunk.append(word_data)
+            chunk_end = word_data["end"]
+            chunk_duration = chunk_end - chunk_start
+
+            if len(current_chunk) >= max_words or chunk_duration >= max_duration:
+                chunk_text = " ".join(w["word"] for w in current_chunk)
+                chunks.append({
+                    "text": chunk_text,
+                    "start": round(chunk_start, 3),
+                    "end": round(chunk_end, 3),
+                })
+                if word_data != aligned_words[-1]:
+                    current_chunk = []
+                    chunk_start = word_data["end"]
+
+        if current_chunk:
+            chunk_text = " ".join(w["word"] for w in current_chunk)
+            chunks.append({
+                "text": chunk_text,
+                "start": round(chunk_start, 3),
+                "end": round(current_chunk[-1]["end"], 3),
+            })
+
+        log.info(f"  Created {len(chunks)} subtitle chunks from {len(aligned_words)} words")
+        return chunks
+
     def generate_audio(self, text: str, output_path: str) -> tuple[float, list[dict]]:
         """
         Generates a .wav file from text in the configured language.
@@ -1219,47 +1374,107 @@ class AudioEngine:
         text = self._clean_tts_text(text)
 
         try:
-            sentences = self._split_sentences(text)
-            log.info(f"  [Audio] {len(sentences)} sentence(s) to synthesise")
-
-            all_chunks: list[np.ndarray] = []
-            sample_rate: int = 24000
-            timings: list[dict] = []
-            current_time: float = 0.0
-
-            for fragment, pause in sentences:
-                samples, sample_rate = self._synth(fragment)
-                chunk_duration = len(samples) / sample_rate
-                start_time = current_time
-                end_time = current_time + chunk_duration
-
-                timings.append({
-                    "text": fragment,
-                    "start": round(start_time, 3),
-                    "end": round(end_time, 3),
-                })
-
-                all_chunks.append(samples)
-                current_time = end_time
-
-                if pause > 0.0:
-                    silence_samples = int(pause * sample_rate)
-                    all_chunks.append(np.zeros(silence_samples, dtype=samples.dtype))
-                    current_time += pause
-
-            final_samples = np.concatenate(all_chunks) if all_chunks else np.zeros(0)
-
-            sf.write(output_path, final_samples, sample_rate)
-
-            duration = len(final_samples) / sample_rate
-            log.info(
-                f"  Audio generated: {duration:.2f}s "
-                f"({len(final_samples)} samples @ {sample_rate}Hz)"
-            )
-            return duration, timings
+            if self.subtitle_method == "pro":
+                return self._generate_audio_pro(text, output_path)
+            else:
+                return self._generate_audio_fast(text, output_path)
 
         except Exception as e:
             raise RuntimeError(f"Error generating audio with Kokoro: {e}")
+
+    def _generate_audio_fast(self, text: str, output_path: str) -> tuple[float, list[dict]]:
+        """
+        Fast mode: sentence-level subtitle timing (original behavior).
+        """
+        sentences = self._split_sentences(text)
+        log.info(f"  [Audio] {len(sentences)} sentence(s) to synthesise (fast mode)")
+
+        all_chunks: list[np.ndarray] = []
+        sample_rate: int = 24000
+        timings: list[dict] = []
+        current_time: float = 0.0
+
+        for fragment, pause in sentences:
+            samples, sample_rate = self._synth(fragment)
+            chunk_duration = len(samples) / sample_rate
+            start_time = current_time
+            end_time = current_time + chunk_duration
+
+            timings.append({
+                "text": fragment,
+                "start": round(start_time, 3),
+                "end": round(end_time, 3),
+            })
+
+            all_chunks.append(samples)
+            current_time = end_time
+
+            if pause > 0.0:
+                silence_samples = int(pause * sample_rate)
+                all_chunks.append(np.zeros(silence_samples, dtype=samples.dtype))
+                current_time += pause
+
+        final_samples = np.concatenate(all_chunks) if all_chunks else np.zeros(0)
+
+        sf.write(output_path, final_samples, sample_rate)
+
+        duration = len(final_samples) / sample_rate
+        log.info(
+            f"  Audio generated: {duration:.2f}s "
+            f"({len(final_samples)} samples @ {sample_rate}Hz)"
+        )
+        return duration, timings
+
+    def _generate_audio_pro(self, text: str, output_path: str) -> tuple[float, list[dict]]:
+        """
+        Pro mode: generates full audio first, then uses Whisper for word-level
+        timing, then aligns original text to Whisper's timestamps using difflib.
+        """
+        log.info(f"  [Audio] Generating audio for Pro mode (whisper alignment)")
+
+        all_chunks: list[np.ndarray] = []
+        sample_rate: int = 24000
+
+        sentences = self._split_sentences(text)
+        for fragment, pause in sentences:
+            samples, sample_rate = self._synth(fragment)
+            all_chunks.append(samples)
+
+            if pause > 0.0:
+                silence_samples = int(pause * sample_rate)
+                all_chunks.append(np.zeros(silence_samples, dtype=samples.dtype))
+
+        final_samples = np.concatenate(all_chunks) if all_chunks else np.zeros(0)
+
+        sf.write(output_path, final_samples, sample_rate)
+        duration = len(final_samples) / sample_rate
+
+        log.info(
+            f"  Audio generated: {duration:.2f}s, transcribing with Whisper..."
+        )
+
+        whisper_words = self._transcribe_with_whisper(output_path)
+
+        if not whisper_words:
+            log.warning("  Whisper returned no words, falling back to fast mode")
+            return self._generate_audio_fast(text, output_path)
+
+        aligned_words = self._align_text_to_whisper(text, whisper_words)
+
+        if not aligned_words:
+            log.warning("  Alignment failed, falling back to fast mode")
+            return self._generate_audio_fast(text, output_path)
+
+        timings = self._chunk_words_for_subtitles(aligned_words)
+
+        if not timings:
+            log.warning("  Chunking failed, falling back to fast mode")
+            return self._generate_audio_fast(text, output_path)
+
+        log.info(
+            f"  Pro mode complete: {duration:.2f}s audio, {len(timings)} subtitle chunks"
+        )
+        return duration, timings
 
 
 # ---------------------------------------------------------------------------
@@ -2326,6 +2541,7 @@ class VideoGenerator:
         visual_source: str = VISUAL_PEXELS,
         slide_theme: str = "tokyo_night",
         subtitle_position: str | None = None,
+        subtitle_method: str = "fast",
     ):
         self.pdf_path = pdf_path
         self.llm_model = llm_model
@@ -2337,8 +2553,10 @@ class VideoGenerator:
         self.visual_source = visual_source
         self.slide_theme_name = slide_theme
         self.subtitle_position = subtitle_position
+        self.subtitle_method = subtitle_method
         self.audio_engine = AudioEngine(
             voice=voice, speed=voice_speed, lang_code=lang_code,
+            subtitle_method=subtitle_method,
         )
 
         if visual_source in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES):
@@ -2694,6 +2912,12 @@ Prerequisites:
         choices=["bottom", "middle", "top"],
         help="Subtitle position: bottom, middle, or top (default: None = no subtitles)",
     )
+    parser.add_argument(
+        "--subtitle-sync",
+        default="fast",
+        choices=["fast", "pro"],
+        help="Subtitle sync method: fast (sentence-level) or pro (word-level with Whisper)",
+    )
 
     args = parser.parse_args()
 
@@ -2711,6 +2935,7 @@ Prerequisites:
     if args.visual_source != VISUAL_PEXELS:
         log.info(f"  Slide theme:  {args.slide_theme}")
     log.info(f"  Subtitles:    {args.subtitles or 'None'}")
+    log.info(f"  Subtitle sync: {args.subtitle_sync}")
     log.info(f"  Output:       {args.output}")
     log.info("=" * 60)
 
@@ -2727,6 +2952,7 @@ Prerequisites:
             visual_source=args.visual_source,
             slide_theme=args.slide_theme,
             subtitle_position=args.subtitles,
+            subtitle_method=args.subtitle_sync,
         )
         final_path = generator.run()
         log.info(f"\nVideo generated successfully: {final_path}")

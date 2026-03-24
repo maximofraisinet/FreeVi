@@ -45,6 +45,7 @@ DEFAULTS: dict = {
     "visual_source":       "pexels",
     "slide_theme":         "tokyo_night",
     "subtitle_position":   None,
+    "subtitle_method":     "fast",        # "fast" = sentence-level, "pro" = word-level with Whisper
     "input_mode":          "pdf",
 }
 
@@ -144,6 +145,7 @@ def save(config: dict) -> None:
         "visual_source":       config.get("visual_source",      DEFAULTS["visual_source"]),
         "slide_theme":         config.get("slide_theme",        DEFAULTS["slide_theme"]),
         "subtitle_position":   config.get("subtitle_position",  DEFAULTS["subtitle_position"]),
+        "subtitle_method":     config.get("subtitle_method",    DEFAULTS["subtitle_method"]),
         "input_mode":          config.get("input_mode",         DEFAULTS["input_mode"]),
     }
     _write(_config_path(), to_save)
@@ -195,6 +197,10 @@ def save_from_panel(panel) -> None:
     subtitle_idx = panel.combo_subtitles.currentIndex()
     subtitle_map = {0: None, 1: "bottom", 2: "middle", 3: "top"}
     raw["subtitle_position"] = subtitle_map.get(subtitle_idx)
+
+    subtitle_method_idx = panel.combo_subtitle_method.currentIndex()
+    subtitle_method_map = {0: "fast", 1: "pro"}
+    raw["subtitle_method"] = subtitle_method_map.get(subtitle_method_idx, "fast")
 
     raw["input_mode"] = "json" if panel.radio_json.isChecked() else "pdf"
 

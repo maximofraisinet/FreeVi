@@ -396,8 +396,12 @@ class PipelineWorker(QThread):
                     self.log_msg.emit(f"  Slide {scene.number}: {title[:40]}... (icon: {icon})", "INFO")
 
         # ── Steps 3–4: Process scenes ──
-        audio_engine = AudioEngine(voice=cfg["voice"], speed=cfg["speed"],
-                                    lang_code=cfg.get("lang_code", "a"))
+        audio_engine = AudioEngine(
+            voice=cfg["voice"],
+            speed=cfg["speed"],
+            lang_code=cfg.get("lang_code", "a"),
+            subtitle_method=cfg.get("subtitle_method", "fast"),
+        )
         pexels_key = cfg.get("pexels_key", "")
         temp_dir = tempfile.mkdtemp(prefix="freevi_")
         final_paths = []
@@ -933,8 +937,29 @@ class ConfigPanel(QWidget):
             "  - Top: Subtitles at the top"
         )
 
+        self.combo_subtitle_method = QComboBox()
+        self.combo_subtitle_method.addItems(["Fast (Sentence-level)", "Pro (Word-level AI)"])
+        self.combo_subtitle_method.setToolTip(
+            "Subtitle sync method:\n"
+            "  - Fast: Sentence-level timing (default, fast)\n"
+            "  - Pro: Word-level timing with AI (slower, better for vertical videos)"
+        )
+        self.lbl_subtitle_method = QLabel(
+            "Fast: Quick generation. Text appears in full sentences."
+        )
+        self.lbl_subtitle_method.setObjectName("lbl_hint")
+        self.lbl_subtitle_method.setWordWrap(True)
+
+        self.combo_subtitles.currentIndexChanged.connect(self._on_subtitle_position_changed)
+
         lay_subtitles.addWidget(QLabel("Position:"), 0, 0)
         lay_subtitles.addWidget(self.combo_subtitles, 0, 1)
+        lay_subtitles.addWidget(QLabel("Sync method:"), 1, 0)
+        lay_subtitles.addWidget(self.combo_subtitle_method, 1, 1)
+        lay_subtitles.addWidget(self.lbl_subtitle_method, 2, 0, 1, 2)
+
+        self._on_subtitle_position_changed()
+
         layout.addWidget(grp_subtitles)
 
         # ── 5. API Keys ──
@@ -1284,6 +1309,7 @@ class ConfigPanel(QWidget):
             "visual_source": visual_source,
             "slide_theme": slide_theme,
             "subtitle_position": {0: None, 1: "bottom", 2: "middle", 3: "top"}.get(self.combo_subtitles.currentIndex()),
+            "subtitle_method": {0: "fast", 1: "pro"}.get(self.combo_subtitle_method.currentIndex()),
             "input_mode": "json" if self.radio_json.isChecked() else "pdf",
         }
 
@@ -1370,6 +1396,12 @@ class ConfigPanel(QWidget):
         idx = subtitle_pos_map.get(cfg.get("subtitle_position"), 0)
         self.combo_subtitles.setCurrentIndex(idx)
 
+        # Subtitles method
+        subtitle_method_map = {"fast": 0, "pro": 1}
+        method_idx = subtitle_method_map.get(cfg.get("subtitle_method"), 0)
+        self.combo_subtitle_method.setCurrentIndex(method_idx)
+        self._on_subtitle_position_changed()
+
         # Input mode (PDF/JSON)
         if cfg.get("input_mode") == "json":
             self.radio_json.setChecked(True)
@@ -1399,6 +1431,22 @@ class ConfigPanel(QWidget):
             errors.append("Specify an output path for the video.")
 
         return errors
+
+    def _on_subtitle_position_changed(self):
+        has_subtitles = self.combo_subtitles.currentIndex() != 0
+        self.combo_subtitle_method.setEnabled(has_subtitles)
+        if has_subtitles:
+            idx = self.combo_subtitle_method.currentIndex()
+            if idx == 0:
+                self.lbl_subtitle_method.setText(
+                    "Fast: Quick generation. Text appears in full sentences."
+                )
+            else:
+                self.lbl_subtitle_method.setText(
+                    "Pro: Dynamic short captions (2-4 words). Downloads AI model (~150MB) on first run. Slower but better for Shorts/Reels."
+                )
+        else:
+            self.lbl_subtitle_method.setText("Enable subtitles to choose sync method.")
 
 
 # ---------------------------------------------------------------------------
@@ -1795,6 +1843,13 @@ class MainWindow(QMainWindow):
         /* ── Labels ──────────────────────────────────────────────────────── */
         QLabel {
             color: #c9d1d9;
+        }
+        QLabel#lbl_hint {
+            color: #8b949e;
+            font-size: 11px;
+            padding: 4px 8px;
+            background-color: #161b22;
+            border-radius: 4px;
         }
 
         /* ── Inputs ──────────────────────────────────────────────────────── */

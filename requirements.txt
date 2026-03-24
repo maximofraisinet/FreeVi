@@ -17,6 +17,9 @@ soundfile>=0.12.0
 # misaki 0.7.x supports Python 3.13
 misaki>=0.7.0
 
+# AI Word-level subtitle alignment (for Pro sync method)
+faster-whisper>=1.0.0
+
 # Environment variable loading (.env file support)
 python-dotenv>=1.0.0
 
