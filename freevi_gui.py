@@ -401,6 +401,7 @@ class PipelineWorker(QThread):
             speed=cfg["speed"],
             lang_code=cfg.get("lang_code", "a"),
             subtitle_method=cfg.get("subtitle_method", "fast"),
+            subtitle_max_words=cfg.get("subtitle_max_words", 4),
         )
         pexels_key = cfg.get("pexels_key", "")
         temp_dir = tempfile.mkdtemp(prefix="freevi_")
@@ -950,13 +951,25 @@ class ConfigPanel(QWidget):
         self.lbl_subtitle_method.setObjectName("lbl_hint")
         self.lbl_subtitle_method.setWordWrap(True)
 
+        self.spin_subtitle_max_words = QSpinBox()
+        self.spin_subtitle_max_words.setRange(1, 10)
+        self.spin_subtitle_max_words.setValue(4)
+        self.spin_subtitle_max_words.setToolTip(
+            "Maximum words per subtitle screen (1-10).\n"
+            "Use 1-2 for aggressive shorts, 4-6 for standard reading.\n"
+            "Only applies to Pro mode."
+        )
+
         self.combo_subtitles.currentIndexChanged.connect(self._on_subtitle_position_changed)
+        self.combo_subtitle_method.currentIndexChanged.connect(self._on_subtitle_position_changed)
 
         lay_subtitles.addWidget(QLabel("Position:"), 0, 0)
         lay_subtitles.addWidget(self.combo_subtitles, 0, 1)
         lay_subtitles.addWidget(QLabel("Sync method:"), 1, 0)
         lay_subtitles.addWidget(self.combo_subtitle_method, 1, 1)
-        lay_subtitles.addWidget(self.lbl_subtitle_method, 2, 0, 1, 2)
+        lay_subtitles.addWidget(QLabel("Max words:"), 2, 0)
+        lay_subtitles.addWidget(self.spin_subtitle_max_words, 2, 1)
+        lay_subtitles.addWidget(self.lbl_subtitle_method, 3, 0, 1, 2)
 
         self._on_subtitle_position_changed()
 
@@ -1310,6 +1323,7 @@ class ConfigPanel(QWidget):
             "slide_theme": slide_theme,
             "subtitle_position": {0: None, 1: "bottom", 2: "middle", 3: "top"}.get(self.combo_subtitles.currentIndex()),
             "subtitle_method": {0: "fast", 1: "pro"}.get(self.combo_subtitle_method.currentIndex()),
+            "subtitle_max_words": self.spin_subtitle_max_words.value(),
             "input_mode": "json" if self.radio_json.isChecked() else "pdf",
         }
 
@@ -1400,6 +1414,11 @@ class ConfigPanel(QWidget):
         subtitle_method_map = {"fast": 0, "pro": 1}
         method_idx = subtitle_method_map.get(cfg.get("subtitle_method"), 0)
         self.combo_subtitle_method.setCurrentIndex(method_idx)
+
+        # Subtitles max words
+        max_words = cfg.get("subtitle_max_words", 4)
+        self.spin_subtitle_max_words.setValue(max_words)
+
         self._on_subtitle_position_changed()
 
         # Input mode (PDF/JSON)
@@ -1435,6 +1454,10 @@ class ConfigPanel(QWidget):
     def _on_subtitle_position_changed(self):
         has_subtitles = self.combo_subtitles.currentIndex() != 0
         self.combo_subtitle_method.setEnabled(has_subtitles)
+        
+        is_pro_mode = has_subtitles and self.combo_subtitle_method.currentIndex() == 1
+        self.spin_subtitle_max_words.setEnabled(is_pro_mode)
+        
         if has_subtitles:
             idx = self.combo_subtitle_method.currentIndex()
             if idx == 0:
@@ -1442,8 +1465,9 @@ class ConfigPanel(QWidget):
                     "Fast: Quick generation. Text appears in full sentences."
                 )
             else:
+                max_words = self.spin_subtitle_max_words.value()
                 self.lbl_subtitle_method.setText(
-                    "Pro: Dynamic short captions (2-4 words). Downloads AI model (~150MB) on first run. Slower but better for Shorts/Reels."
+                    f"Pro: Dynamic short captions ({max_words} words max). Downloads AI model (~150MB) on first run. Slower but better for Shorts/Reels."
                 )
         else:
             self.lbl_subtitle_method.setText("Enable subtitles to choose sync method.")

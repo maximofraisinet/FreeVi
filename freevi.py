@@ -1018,6 +1018,7 @@ class AudioEngine:
         speed: float = 1.0,
         lang_code: str = "",
         subtitle_method: str = "fast",
+        subtitle_max_words: int = 4,
     ):
         """
         Initializes the audio engine.
@@ -1028,11 +1029,13 @@ class AudioEngine:
             lang_code: Kokoro single-char language code (``a``, ``e``, …).
                        If empty, inferred from the voice prefix.
             subtitle_method: "fast" for sentence-level, "pro" for word-level with Whisper.
+            subtitle_max_words: Maximum words per subtitle chunk (for Pro mode).
         """
         self.voice = voice
         self.speed = speed
         self.lang_code = lang_code or get_lang_code_for_voice(voice)
         self.subtitle_method = subtitle_method
+        self.subtitle_max_words = subtitle_max_words
         self.kokoro = None
         self.g2p = None
         self._whisper_model = None
@@ -1309,7 +1312,7 @@ class AudioEngine:
     def _chunk_words_for_subtitles(
         self,
         aligned_words: list[dict],
-        max_words: int = 4,
+        max_words: int | None = None,
         max_duration: float = 2.0,
     ) -> list[dict]:
         """
@@ -1318,7 +1321,15 @@ class AudioEngine:
         
         Forces a chunk cut at punctuation marks (.,;:!?) to match natural speech pauses.
         Cleans up punctuation (except ?) from the final display text.
+        
+        Args:
+            aligned_words: List of word dicts with timing.
+            max_words: Max words per chunk. Defaults to self.subtitle_max_words.
+            max_duration: Max duration per chunk in seconds.
         """
+        if max_words is None:
+            max_words = self.subtitle_max_words
+        
         if not aligned_words:
             return []
 
@@ -2561,6 +2572,7 @@ class VideoGenerator:
         slide_theme: str = "tokyo_night",
         subtitle_position: str | None = None,
         subtitle_method: str = "fast",
+        subtitle_max_words: int = 4,
     ):
         self.pdf_path = pdf_path
         self.llm_model = llm_model
@@ -2573,9 +2585,11 @@ class VideoGenerator:
         self.slide_theme_name = slide_theme
         self.subtitle_position = subtitle_position
         self.subtitle_method = subtitle_method
+        self.subtitle_max_words = subtitle_max_words
         self.audio_engine = AudioEngine(
             voice=voice, speed=voice_speed, lang_code=lang_code,
             subtitle_method=subtitle_method,
+            subtitle_max_words=subtitle_max_words,
         )
 
         if visual_source in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES):
@@ -2937,6 +2951,13 @@ Prerequisites:
         choices=["fast", "pro"],
         help="Subtitle sync method: fast (sentence-level) or pro (word-level with Whisper)",
     )
+    parser.add_argument(
+        "--subtitle-max-words",
+        type=int,
+        default=4,
+        choices=range(1, 11),
+        help="Maximum words per subtitle chunk (1-10, default: 4). Only applies to Pro mode.",
+    )
 
     args = parser.parse_args()
 
@@ -2955,6 +2976,7 @@ Prerequisites:
         log.info(f"  Slide theme:  {args.slide_theme}")
     log.info(f"  Subtitles:    {args.subtitles or 'None'}")
     log.info(f"  Subtitle sync: {args.subtitle_sync}")
+    log.info(f"  Max words/chunk: {args.subtitle_max_words}")
     log.info(f"  Output:       {args.output}")
     log.info("=" * 60)
 
@@ -2972,6 +2994,7 @@ Prerequisites:
             slide_theme=args.slide_theme,
             subtitle_position=args.subtitles,
             subtitle_method=args.subtitle_sync,
+            subtitle_max_words=args.subtitle_max_words,
         )
         final_path = generator.run()
         log.info(f"\nVideo generated successfully: {final_path}")

@@ -46,6 +46,7 @@ DEFAULTS: dict = {
     "slide_theme":         "tokyo_night",
     "subtitle_position":   None,
     "subtitle_method":     "fast",        # "fast" = sentence-level, "pro" = word-level with Whisper
+    "subtitle_max_words":  4,             # max words per subtitle chunk (1-10)
     "input_mode":          "pdf",
 }
 
@@ -146,6 +147,7 @@ def save(config: dict) -> None:
         "slide_theme":         config.get("slide_theme",        DEFAULTS["slide_theme"]),
         "subtitle_position":   config.get("subtitle_position",  DEFAULTS["subtitle_position"]),
         "subtitle_method":     config.get("subtitle_method",    DEFAULTS["subtitle_method"]),
+        "subtitle_max_words":  config.get("subtitle_max_words", DEFAULTS["subtitle_max_words"]),
         "input_mode":          config.get("input_mode",         DEFAULTS["input_mode"]),
     }
     _write(_config_path(), to_save)
@@ -201,6 +203,8 @@ def save_from_panel(panel) -> None:
     subtitle_method_idx = panel.combo_subtitle_method.currentIndex()
     subtitle_method_map = {0: "fast", 1: "pro"}
     raw["subtitle_method"] = subtitle_method_map.get(subtitle_method_idx, "fast")
+
+    raw["subtitle_max_words"] = panel.spin_subtitle_max_words.value()
 
     raw["input_mode"] = "json" if panel.radio_json.isChecked() else "pdf"
 
