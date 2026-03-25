@@ -88,47 +88,31 @@ The GUI lets you select:
 - **Subtitles:** Position, Sync Method (Fast/Pro), and Max Words per chunk.
 - All other options (voice, language, resolution, etc.)
 
-### JSON Import
+### JSON Import (Hybrid Videos)
 
-Instead of feeding a PDF, you can provide a JSON file with your own scenes. Select **"From JSON"** in the GUI, load your file, and click **Generate Video**. The LLM script generation step is skipped entirely.
+Instead of feeding a PDF, you can provide a JSON file with your own scenes. The system will intelligently detect the visual source per scene, allowing you to create **hybrid videos** that mix Pexels videos, static images, and AI slides in a single render. The LLM script generation step is skipped entirely.
 
-**JSON Format:**
-
-**Example: Pexels Videos or Images**
+**Example: Hybrid JSON format**
 ```json
 {
   "scenes": [
     {
-      "narrator_text": "The universe expands constantly, revealing mysteries beyond our comprehension.",
-      "video_query": "galaxy stars space",
-      "image": false    // optional — true for images, false (or omit) for videos
+      "narrator_text": "Welcome to our presentation about the cosmos.",
+      "video_query": "galaxy stars space" 
+      // Detects video_query -> Uses Pexels Video
     },
     {
-      "narrator_text": "Black holes are regions where gravity is so intense that nothing can escape.",
-      "video_query": "black hole animation",
-      "image": true     // optional — this scene will use a Pexels image instead of video
-    }
-  ]
-}
-```
-
-**Example: AI Slides**
-```json
-{
-  "scenes": [
-    {
-      "narrator_text": "Photosynthesis is the process by which plants convert light into energy.",
-      "title": "Photosynthesis",
-      "content": ["Absorbing sunlight", "Converting to glucose", "Releasing oxygen"],
-      "icon": "leaf.svg",        // optional — icon from Tabler Icons library
-      "generate_svg": false       // optional — set true to also generate an AI SVG illustration
+      "narrator_text": "Let's review the main topics we will cover today.",
+      "title": "Agenda",
+      "content": ["Black Holes", "Dark Matter", "Exoplanets"],
+      "icon": "telescope.svg"
+      // Detects title + content -> Generates an AI Slide
     },
     {
-      "narrator_text": "The water cycle describes the continuous movement of water on Earth.",
-      "title": "Water Cycle",
-      "content": ["Evaporation", "Condensation", "Precipitation"],
-      "icon": "droplet.svg",      // optional
-      "generate_svg": true        // optional
+      "narrator_text": "Here is an incredible view of the James Webb telescope.",
+      "video_query": "james webb telescope in space",
+      "image": true 
+      // Detects image: true -> Uses Pexels Image with Ken Burns effect
     }
   ]
 }
@@ -138,22 +122,66 @@ Each scene needs at least `video_query` **or** `title` + `content`. Add as many 
 
 ### Command-Line Interface
 
+The FreeVi CLI is powerful and allows you to build completely automated video pipelines.
+
+#### Examples
+
+**Full JSON Pipeline (Hybrid Vertical Video)**
+Skip the LLM and PDF steps. Pass a JSON file to build a high-quality vertical short with dynamic subtitles:
 ```bash
-# Basic example (uses Pexels videos by default)
-python freevi.py document.pdf
-
-# Add dynamic "Pro" subtitles (Word-level sync, 2 words max per screen)
-python freevi.py document.pdf --subtitles middle --subtitle-sync pro --subtitle-max-words 2
-
-# Use Pexels images (static photos) instead of videos
-python freevi.py document.pdf --visual-source pexels_images
-
-# Use AI slides instead of videos
-python freevi.py document.pdf --visual-source slides_simple --slide-theme executive
-
-# AI slides with SVG illustrations (slower, requires extra LLM calls)
-python freevi.py document.pdf --visual-source slides_svg --slide-theme tokyo_night
+python freevi.py script.json \
+  --orientation portrait \
+  --resolution 1080x1920 \
+  --voice af_heart \
+  --lang a \
+  --speed 1.0 \
+  --subtitles middle \
+  --subtitle-sync pro \
+  --subtitle-max-words 1 \
+  --output output/my_short.mp4
 ```
+
+**Full PDF Pipeline (Horizontal Video)**
+Full automated pipeline: extracts text, asks the LLM to generate 10 scenes, adds Pexels videos, and renders:
+```bash
+python freevi.py document.pdf \
+  --model qwen3 \
+  --max-scenes 10 \
+  --chunk-size 4096 \
+  --visual-source pexels \
+  --orientation landscape \
+  --resolution 1920x1080 \
+  --voice bm_daniel \
+  --lang b \
+  --speed 1.0 \
+  --subtitles bottom \
+  --subtitle-sync fast \
+  --output output/my_documentary.mp4
+```
+
+#### CLI Reference: Available Flags
+
+**Common Flags (Used in both JSON and PDF modes)**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--orientation` | Video orientation (`landscape`, `portrait`, `square`). | `landscape` |
+| `--resolution` | Output resolution in WxH format (e.g., `1920x1080`). Validates against orientation. | Auto |
+| `--voice` | Kokoro voice ID (e.g., `af_heart`, `bm_daniel`, `em_alex`). | `af_heart` |
+| `--lang` | Narration language code (see Languages section below). | `a` |
+| `--speed` | Narration speed multiplier. | `1.0` |
+| `--subtitles` | Subtitle position (`bottom`, `middle`, `top`). Omit for no subtitles. | None |
+| `--subtitle-sync`| `fast` (sentence-level) or `pro` (word-level via Whisper). | `fast` |
+| `--subtitle-max-words`| Max words per subtitle chunk (1-10). Only applies to `pro` mode. | `4` |
+| `--output` | Path to save the final video. | `output/video_final.mp4` |
+| `--slide-theme` | Theme for slides (`tokyo_night`, `executive`, `minimal`). | `tokyo_night` |
+
+**PDF-Only Flags (Ignored in JSON mode)**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--model` | Local Ollama model name to use for generating the script. | `qwen3` |
+| `--max-scenes` | Target number of scenes to generate. | `8` |
+| `--chunk-size` | Number of tokens per PDF chunk sent to the LLM. | `4096` |
+| `--visual-source`| Visual style to apply globally (`pexels`, `pexels_images`, `slides_simple`, `slides_svg`). | `pexels` |
 
 ### Visual Source Options
 

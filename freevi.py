@@ -2592,7 +2592,14 @@ class VideoGenerator:
             subtitle_max_words=subtitle_max_words,
         )
 
-        if visual_source in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES):
+        is_json = pdf_path.lower().endswith(".json")
+
+        if is_json:
+            self.pexels_api_key = get_pexels_api_key()
+            from slide_templates import get_theme
+            self.slide_theme = get_theme(slide_theme).to_dict()
+            log.info(f"Slide theme: {slide_theme}")
+        elif visual_source in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES):
             self.pexels_api_key = get_pexels_api_key()
         else:
             from slide_templates import get_theme
@@ -2604,24 +2611,39 @@ class VideoGenerator:
 
     def run(self):
         """Runs the full pipeline."""
-        # ── Step 1: Extract PDF text ──
-        log.info("=" * 60)
-        log.info("STEP 1/5: Extracting text from PDF...")
-        log.info("=" * 60)
-        pdf_text = extract_pdf_text(self.pdf_path)
+        is_json = self.pdf_path.lower().endswith(".json")
 
-        # ── Step 2: Generate script with LLM ──
-        log.info("=" * 60)
-        log.info(f"STEP 2/5: Generating script with {self.llm_model}...")
-        log.info("=" * 60)
-        narration_lang = get_language_label(self.lang_code)
-        script = generate_script(
-            pdf_text,
-            self.llm_model,
-            max_scenes=self.max_scenes,
-            chunk_size=self.chunk_size,
-            narration_language=narration_lang,
-        )
+        if is_json:
+            log.info("=" * 60)
+            log.info("STEP 1-2: Loading script from JSON (skipping PDF extraction and LLM)...")
+            log.info("=" * 60)
+            
+            scenes, error = load_scenes_from_json(self.pdf_path)
+            if error:
+                raise ValueError(f"Error loading JSON: {error}")
+            
+            script = Script(scenes=scenes, adjusted_max_scenes=len(scenes), n_chunks=1)
+            narration_lang = get_language_label(self.lang_code)
+            
+        else:
+            # ── Step 1: Extract PDF text ──
+            log.info("=" * 60)
+            log.info("STEP 1/5: Extracting text from PDF...")
+            log.info("=" * 60)
+            pdf_text = extract_pdf_text(self.pdf_path)
+    
+            # ── Step 2: Generate script with LLM ──
+            log.info("=" * 60)
+            log.info(f"STEP 2/5: Generating script with {self.llm_model}...")
+            log.info("=" * 60)
+            narration_lang = get_language_label(self.lang_code)
+            script = generate_script(
+                pdf_text,
+                self.llm_model,
+                max_scenes=self.max_scenes,
+                chunk_size=self.chunk_size,
+                narration_language=narration_lang,
+            )
 
         # Show script summary
         for scene in script.scenes:
@@ -2632,7 +2654,9 @@ class VideoGenerator:
             )
 
         # ── Step 2b: Generate slide content if needed ──
-        if self.visual_source not in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES):
+        has_slide_content = is_json and any(s.slide_title and s.slide_content for s in script.scenes)
+        
+        if self.visual_source not in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES) and not has_slide_content:
             log.info("=" * 60)
             log.info(f"STEP 2b/5: Extracting slide content...")
             log.info("=" * 60)
@@ -2645,6 +2669,10 @@ class VideoGenerator:
                 scene.slide_content = content
                 scene.slide_icon = icon
                 log.info(f"  Slide {scene.number}: {title[:40]}... (icon: {icon})")
+        elif has_slide_content:
+            log.info("=" * 60)
+            log.info(f"STEP 2b/5: Using slide content from JSON.")
+            log.info("=" * 60)
 
         # ── Steps 3–4: Process each scene ──
         final_scene_paths = []
@@ -2671,12 +2699,24 @@ class VideoGenerator:
             scene.subtitle_timings = subtitle_timings
             log.info(f"  [Audio] Exact duration: {duration:.3f} seconds, {len(subtitle_timings)} subtitle(s)")
 
+            # Determine visual source dynamically for JSON, else fallback to global
+            if is_json:
+                scene_type = detect_scene_type(scene)
+                if scene_type == "slides":
+                    scene_vs = VISUAL_SLIDES_SVG if getattr(scene, "slide_icon", "") else VISUAL_SLIDES_SIMPLE
+                elif scene_type == "pexels_images":
+                    scene_vs = VISUAL_PEXELS_IMAGES
+                else:
+                    scene_vs = VISUAL_PEXELS
+            else:
+                scene_vs = self.visual_source
+
             # ── 3b: Visual content based on visual_source ──
-            if self.visual_source == VISUAL_PEXELS:
+            if scene_vs == VISUAL_PEXELS:
                 self._process_pexels_scene(scene, duration, used_video_urls)
-            elif self.visual_source == VISUAL_PEXELS_IMAGES:
+            elif scene_vs == VISUAL_PEXELS_IMAGES:
                 self._process_pexels_image_scene(scene, used_video_urls)
-            elif self.visual_source == VISUAL_SLIDES_SVG:
+            elif scene_vs == VISUAL_SLIDES_SVG:
                 self._process_slide_svg_scene(scene, duration, slide_dir)
             else:
                 self._process_slide_simple_scene(scene, duration, slide_dir)
@@ -2687,13 +2727,13 @@ class VideoGenerator:
                 self.temp_dir, f"scene_{scene.number:02d}_final.mp4"
             )
 
-            if self.visual_source == VISUAL_PEXELS:
+            if scene_vs == VISUAL_PEXELS:
                 assemble_scene_from_raw(
                     scene.video_path, audio_path, duration, scene_final_path,
                     subtitle_timings=getattr(self, 'subtitle_position', None) and scene.subtitle_timings,
                     subtitle_position=getattr(self, 'subtitle_position', None),
                 )
-            elif self.visual_source == VISUAL_PEXELS_IMAGES:
+            elif scene_vs == VISUAL_PEXELS_IMAGES:
                 zoom_in = scene.number % 2 == 1
                 assemble_image_scene(
                     scene.image_path, audio_path, duration, scene_final_path, zoom_in,
@@ -2928,6 +2968,17 @@ Prerequisites:
              "The context window is derived automatically from this value.",
     )
     parser.add_argument(
+        "--orientation",
+        default="landscape",
+        choices=["landscape", "portrait", "square"],
+        help="Video orientation: landscape, portrait, or square (default: landscape).",
+    )
+    parser.add_argument(
+        "--resolution",
+        default=None,
+        help="Target resolution as WxH (e.g., 1920x1080). If not provided, a default based on orientation is used.",
+    )
+    parser.add_argument(
         "--visual-source",
         default=VISUAL_PEXELS,
         choices=VISUAL_OPTIONS,
@@ -2961,6 +3012,60 @@ Prerequisites:
 
     args = parser.parse_args()
 
+    # Apply resolution and orientation globally
+    global TARGET_WIDTH, TARGET_HEIGHT
+    
+    if args.resolution:
+        try:
+            w_str, h_str = args.resolution.lower().split("x")
+            req_w, req_h = int(w_str), int(h_str)
+            
+            # Interactive validation
+            mismatch = False
+            if args.orientation == "portrait" and req_w > req_h:
+                mismatch = True
+            elif args.orientation == "landscape" and req_h > req_w:
+                mismatch = True
+            elif args.orientation == "square" and req_w != req_h:
+                mismatch = True
+                
+            if mismatch:
+                log.warning(f"You selected '--orientation {args.orientation}' but requested a mismatched resolution ({req_w}x{req_h}).")
+                log.warning("This will result in stretched or incorrectly cropped video.")
+                if args.orientation == "portrait":
+                    suggested_w, suggested_h = req_h, req_w
+                elif args.orientation == "landscape":
+                    suggested_w, suggested_h = req_h, req_w
+                else:
+                    suggested_w, suggested_h = req_w, req_w
+                    
+                import sys
+                # Only ask if we're in an interactive terminal
+                if sys.stdin.isatty():
+                    ans = input(f"Do you want to automatically flip/adjust the resolution to {suggested_w}x{suggested_h}? (y/n): ").strip().lower()
+                    if ans in ('y', 'yes'):
+                        TARGET_WIDTH, TARGET_HEIGHT = suggested_w, suggested_h
+                    else:
+                        TARGET_WIDTH, TARGET_HEIGHT = req_w, req_h
+                else:
+                    log.warning(f"Non-interactive terminal detected. Using requested resolution {req_w}x{req_h}.")
+                    TARGET_WIDTH, TARGET_HEIGHT = req_w, req_h
+            else:
+                TARGET_WIDTH, TARGET_HEIGHT = req_w, req_h
+                
+        except ValueError:
+            log.error("Invalid format for --resolution. Use WxH (e.g. 1920x1080).")
+            import sys
+            sys.exit(1)
+    else:
+        # Default based on orientation
+        if args.orientation == "portrait":
+            TARGET_WIDTH, TARGET_HEIGHT = 1080, 1920
+        elif args.orientation == "square":
+            TARGET_WIDTH, TARGET_HEIGHT = 1080, 1080
+        else: # landscape
+            TARGET_WIDTH, TARGET_HEIGHT = 1920, 1080
+
     log.info("=" * 60)
     log.info("  FreeVi - Video Generator from PDF")
     log.info("=" * 60)
@@ -2972,6 +3077,8 @@ Prerequisites:
     log.info(f"  Max scenes:   {args.max_scenes}")
     log.info(f"  Chunk size:   {args.chunk_size} tokens")
     log.info(f"  Visual:       {args.visual_source}")
+    log.info(f"  Orientation:  {args.orientation}")
+    log.info(f"  Resolution:   {TARGET_WIDTH}x{TARGET_HEIGHT}")
     if args.visual_source != VISUAL_PEXELS:
         log.info(f"  Slide theme:  {args.slide_theme}")
     log.info(f"  Subtitles:    {args.subtitles or 'None'}")
@@ -2990,6 +3097,7 @@ Prerequisites:
             max_scenes=args.max_scenes,
             chunk_size=args.chunk_size,
             lang_code=args.lang,
+            orientation=args.orientation,
             visual_source=args.visual_source,
             slide_theme=args.slide_theme,
             subtitle_position=args.subtitles,

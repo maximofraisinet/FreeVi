@@ -294,6 +294,7 @@ class PipelineWorker(QThread):
             assemble_scene_from_raw,
             assemble_slide_scene,
             concatenate_scenes,
+            detect_scene_type,
             extract_pdf_text,
             generate_script,
             generate_slide_content,
@@ -427,8 +428,9 @@ class PipelineWorker(QThread):
                 base_progress + (num - 1) * progress_per_scene,
                 f"Scene {num}/{total_scenes}: generating audio...",
             )
+            scene_desc = scene.video_query or scene.slide_title or f"Slide {num}"
             self.log_msg.emit(
-                f"── Scene {num}/{total_scenes}: [{scene.video_query}]", "INFO"
+                f"── Scene {num}/{total_scenes}: [{scene_desc}]", "INFO"
             )
 
             # Audio
@@ -441,10 +443,15 @@ class PipelineWorker(QThread):
             if self._cancel:
                 return
 
-            # Visual content — per-scene type in JSON mode, global in PDF mode
-            if cfg.get("input_mode") == "json" and visual_source in (VISUAL_PEXELS, VISUAL_PEXELS_IMAGES):
-                use_image = getattr(scene, "image", False)
-                scene_vs = VISUAL_PEXELS_IMAGES if use_image else VISUAL_PEXELS
+            # Visual content — detect per scene in JSON mode, use global in PDF mode
+            if cfg.get("input_mode") == "json":
+                scene_type = detect_scene_type(scene)
+                if scene_type == "slides":
+                    scene_vs = VISUAL_SLIDES_SVG if getattr(scene, "slide_icon", "") else VISUAL_SLIDES_SIMPLE
+                elif scene_type == "pexels_images":
+                    scene_vs = VISUAL_PEXELS_IMAGES
+                else:  # pexels
+                    scene_vs = VISUAL_PEXELS
             else:
                 scene_vs = visual_source
 
@@ -1438,13 +1445,27 @@ class ConfigPanel(QWidget):
                 errors.append("No PDF file has been selected.")
             elif not Path(pdf).exists():
                 errors.append(f"PDF file does not exist: {pdf}")
+            
+            # PDF mode: check visual source (Pexels or Slides)
+            visual_source_idx = self.combo_visual_source.currentIndex()
+            if visual_source_idx in (0, 1) and not self.edit_pexels.text().strip():
+                errors.append("Pexels API Key is required when using Pexels.")
         else:
+            # JSON mode: check loaded scenes, not the hidden combobox
             if not self._json_path:
                 errors.append("No JSON file has been selected.")
-
-        visual_source_idx = self.combo_visual_source.currentIndex()
-        if visual_source_idx in (0, 1) and not self.edit_pexels.text().strip():
-            errors.append("Pexels API Key is required when using Pexels.")
+            elif not getattr(self, "_json_scenes", None):
+                errors.append("No scenes loaded from JSON.")
+            else:
+                # Check if any scene in JSON needs Pexels
+                needs_pexels = False
+                for scene in self._json_scenes:
+                    if not (scene.slide_title and scene.slide_content):
+                        # Scene is NOT a slide, so it needs Pexels
+                        needs_pexels = True
+                        break
+                if needs_pexels and not self.edit_pexels.text().strip():
+                    errors.append("Pexels API Key is required for Pexels scenes in your JSON.")
 
         if not self.edit_output.text().strip():
             errors.append("Specify an output path for the video.")
