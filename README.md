@@ -153,14 +153,15 @@ The FreeVi CLI is powerful and allows you to build completely automated video pi
 
 #### Examples
 
-**Full JSON Pipeline (Hybrid Vertical Video)**
-Skip the LLM and PDF steps. Pass a JSON file to build a high-quality vertical short with dynamic subtitles:
+**Full JSON Pipeline (Hybrid Vertical Video with VibeVoice)**
+Skip the LLM and PDF steps. Pass a JSON file to build a high-quality vertical short with dynamic subtitles using VibeVoice:
 ```bash
 python freevi.py script.json \
   --orientation portrait \
   --resolution 1080x1920 \
-  --voice af_heart \
-  --lang a \
+  --tts-engine vibevoice \
+  --voice sp/sp-Spk0_woman \
+  --lang e \
   --speed 1.0 \
   --subtitles middle \
   --subtitle-sync pro \
@@ -168,8 +169,8 @@ python freevi.py script.json \
   --output output/my_short.mp4
 ```
 
-**Full PDF Pipeline (Horizontal Video)**
-Full automated pipeline: extracts text, asks the LLM to generate 10 scenes, adds Pexels videos, and renders:
+**Full PDF Pipeline (Horizontal Video with Kokoro)**
+Full automated pipeline: extracts text, asks the LLM to generate 10 scenes, adds Pexels videos, and renders using Kokoro:
 ```bash
 python freevi.py document.pdf \
   --model qwen3 \
@@ -178,6 +179,7 @@ python freevi.py document.pdf \
   --visual-source pexels \
   --orientation landscape \
   --resolution 1920x1080 \
+  --tts-engine kokoro \
   --voice bm_daniel \
   --lang b \
   --speed 1.0 \
@@ -194,7 +196,7 @@ python freevi.py document.pdf \
 | `--orientation` | Video orientation (`landscape`, `portrait`, `square`). | `landscape` |
 | `--resolution` | Output resolution in WxH format (e.g., `1920x1080`). Validates against orientation. | Auto |
 | `--tts-engine` | `kokoro` or `vibevoice`. | `kokoro` |
-| `--voice` | Voice ID (Kokoro: `af_heart` / VibeVoice: `sp-Spk0_woman`). | `af_heart` |
+| `--voice` | Voice ID. For Kokoro: e.g. `af_heart`. For VibeVoice: include the subfolder, e.g. `sp/sp-Spk0_woman`. | `af_heart` |
 | `--lang` | Narration language code (see Languages section below). | `a` |
 | `--speed` | Narration speed multiplier. | `1.0` |
 | `--subtitles` | Subtitle position (`bottom`, `middle`, `top`). Omit for no subtitles. | None |
