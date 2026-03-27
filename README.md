@@ -77,12 +77,20 @@ sudo pacman -S cairo
    pip install git+https://github.com/microsoft/VibeVoice.git
    pip install flash-attn --no-build-isolation
    ```
-2. Download the pre-cached voice prompts using `wget` and extract them into the `vibevoices` folder:
+2. Download the VibeVoice voice files for your desired languages and extract them into the `vibevoices` folder:
    ```bash
-   wget https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B/resolve/main/prompts.tar.gz
-   tar -xzf prompts.tar.gz
-   mv prompts/ vibevoices/
-   rm prompts.tar.gz
+   mkdir -p vibevoices
+   
+   # Download Spanish voices
+   wget https://github.com/user-attachments/files/24035884/experimental_voices_sp.tar.gz
+   tar -xzf experimental_voices_sp.tar.gz -C vibevoices
+   
+   # Download English voices (Pack 1)
+   wget https://github.com/user-attachments/files/24189272/experimental_voices_en1.tar.gz
+   tar -xzf experimental_voices_en1.tar.gz -C vibevoices
+   
+   # Clean up downloaded archives
+   rm experimental_voices_*.tar.gz
    ```
 
 ### 4. Configure Environment Variables (Optional)
