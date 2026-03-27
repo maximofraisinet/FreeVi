@@ -2930,6 +2930,12 @@ Prerequisites:
         help="Ollama model to use (default: qwen3)",
     )
     parser.add_argument(
+        "--tts-engine",
+        default="kokoro",
+        choices=["kokoro", "vibevoice"],
+        help="Text-to-Speech engine to use (default: kokoro)",
+    )
+    parser.add_argument(
         "--voice",
         default="af_heart",
         help="Kokoro voice ID (default: af_heart). Must match --lang.",

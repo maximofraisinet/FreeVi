@@ -37,3 +37,9 @@ env/
 user_config.json
 
 docs/*
+
+# VibeVoices prompts
+vibevoices/**/*.pt
+prompts.tar.gz
+prompts/
+

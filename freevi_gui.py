@@ -397,13 +397,20 @@ class PipelineWorker(QThread):
                     self.log_msg.emit(f"  Slide {scene.number}: {title[:40]}... (icon: {icon})", "INFO")
 
         # ── Steps 3–4: Process scenes ──
-        audio_engine = AudioEngine(
-            voice=cfg["voice"],
-            speed=cfg["speed"],
-            lang_code=cfg.get("lang_code", "a"),
-            subtitle_method=cfg.get("subtitle_method", "fast"),
-            subtitle_max_words=cfg.get("subtitle_max_words", 4),
-        )
+        if cfg.get("tts_engine") == "vibevoice":
+            from vibevoice_engine import VibeVoiceEngine
+            audio_engine = VibeVoiceEngine(
+                voice=cfg["voice"],
+                subtitle_max_words=cfg.get("subtitle_max_words", 4),
+            )
+        else:
+            audio_engine = AudioEngine(
+                voice=cfg["voice"],
+                speed=cfg["speed"],
+                lang_code=cfg.get("lang_code", "a"),
+                subtitle_method=cfg.get("subtitle_method", "fast"),
+                subtitle_max_words=cfg.get("subtitle_max_words", 4),
+            )
         pexels_key = cfg.get("pexels_key", "")
         temp_dir = tempfile.mkdtemp(prefix="freevi_")
         final_paths = []
@@ -636,10 +643,11 @@ class PipelineWorker(QThread):
 class ConfigPanel(QWidget):
     """Left panel with all configuration selectors."""
 
-    def __init__(self, ollama_models: list[str], kokoro_voices: list[str]):
+    def __init__(self, ollama_models: list[str], kokoro_voices: list[str], vibevoice_voices: list[str]):
         super().__init__()
         self._models = ollama_models
         self._all_voices = kokoro_voices
+        self._vibevoice_voices = vibevoice_voices
         self._pdf_text: str = ""
         self._n_chunks: int = 0
         self._json_path: str = ""
@@ -762,7 +770,7 @@ class ConfigPanel(QWidget):
         self._update_context_info()
 
         # ── 3. Language & Voice (Kokoro) ──
-        grp_voice = QGroupBox("Language & Voice (Kokoro 1.0)")
+        grp_voice = QGroupBox("TTS Engine & Voice")
         grp_voice.setObjectName("groupbox")
         lay_voice = QGridLayout(grp_voice)
         lay_voice.setSpacing(8)
@@ -803,13 +811,22 @@ class ConfigPanel(QWidget):
             lambda v: self.lbl_speed_val.setText(f"{v/100:.2f}×")
         )
 
-        lay_voice.addWidget(QLabel("Language:"), 0, 0)
-        lay_voice.addWidget(self.combo_language, 0, 1, 1, 2)
-        lay_voice.addWidget(QLabel("Voice:"), 1, 0)
-        lay_voice.addWidget(self.combo_voice, 1, 1, 1, 2)
-        lay_voice.addWidget(QLabel("Speed:"), 2, 0)
-        lay_voice.addWidget(self.slider_speed, 2, 1)
-        lay_voice.addWidget(self.lbl_speed_val, 2, 2)
+        # Engine selector
+        self.combo_engine = QComboBox()
+        self.combo_engine.addItem("Kokoro v1.0 (Fast, ONNX)", "kokoro")
+        self.combo_engine.addItem("VibeVoice 0.5B (Natural, PyTorch)", "vibevoice")
+        self.combo_engine.currentIndexChanged.connect(self._on_engine_changed)
+
+        lay_voice.addWidget(QLabel("Engine:"), 0, 0)
+        lay_voice.addWidget(self.combo_engine, 0, 1, 1, 2)
+
+        lay_voice.addWidget(QLabel("Language:"), 1, 0)
+        lay_voice.addWidget(self.combo_language, 1, 1, 1, 2)
+        lay_voice.addWidget(QLabel("Voice:"), 2, 0)
+        lay_voice.addWidget(self.combo_voice, 2, 1, 1, 2)
+        lay_voice.addWidget(QLabel("Speed:"), 3, 0)
+        lay_voice.addWidget(self.slider_speed, 3, 1)
+        lay_voice.addWidget(self.lbl_speed_val, 3, 2)
         layout.addWidget(grp_voice)
 
         # ── 4. Video ──
@@ -1139,8 +1156,35 @@ class ConfigPanel(QWidget):
         except Exception:
             self.lbl_context_info.setText("")
 
+    def _on_engine_changed(self):
+        engine = self.combo_engine.currentData()
+        self.combo_voice.blockSignals(True)
+        self.combo_voice.clear()
+        
+        if engine == "kokoro":
+            self.combo_language.setEnabled(True)
+            self.slider_speed.setEnabled(True)
+            self.combo_subtitle_method.setEnabled(True)
+            self.combo_subtitle_method.setToolTip("Select subtitle generation method.")
+            self._on_language_changed() # populate kokoro voices
+        else:
+            self.combo_language.setEnabled(False)
+            self.slider_speed.setEnabled(False)
+            self.combo_voice.addItems(self._vibevoice_voices)
+            
+            idx = self.combo_subtitle_method.findData("pro")
+            if idx >= 0:
+                self.combo_subtitle_method.setCurrentIndex(idx)
+            self.combo_subtitle_method.setEnabled(False)
+            self.combo_subtitle_method.setToolTip("VibeVoice requires Whisper (Pro) for subtitles.")
+            
+        self.combo_voice.blockSignals(False)
+
     def _on_language_changed(self):
         """Repopulates the voice combo when the user selects a different language."""
+        if hasattr(self, 'combo_engine') and self.combo_engine.currentData() != "kokoro":
+            return
+            
         lang_code = self.combo_language.currentData()
         if lang_code is None:
             return
@@ -1313,6 +1357,7 @@ class ConfigPanel(QWidget):
         return {
             "pdf_path": input_path,
             "model": self.combo_model.currentText(),
+            "tts_engine": self.combo_engine.currentData(),
             "lang_code": self.combo_language.currentData() or "a",
             "voice": self.combo_voice.currentText(),
             "speed": self.slider_speed.value() / 100.0,
@@ -1606,6 +1651,7 @@ class MainWindow(QMainWindow):
 
         self._models = self._get_ollama_models()
         self._voices = self._get_kokoro_voices()
+        self._vibevoice_voices = self._get_vibevoice_voices()
 
         self._build_ui()
         self._apply_styles()
@@ -1638,6 +1684,15 @@ class MainWindow(QMainWindow):
             return names if names else ["qwen3"]
         except Exception:
             return ["qwen3", "llama2", "mistral"]
+
+    def _get_vibevoice_voices(self) -> list[str]:
+        base = Path(__file__).parent / "vibevoices"
+        if not base.exists():
+            return ["sp/sp-Spk0_woman", "sp/sp-Spk1_man"]
+        pts = [str(f.relative_to(base).with_suffix("")) for f in base.rglob("*.pt")]
+        # To display nicely in dropdown, replace backslashes with forward slashes on Windows
+        pts = [p.replace("\\", "/") for p in pts]
+        return sorted(pts) if pts else ["sp/sp-Spk0_woman", "sp/sp-Spk1_man"]
 
     def _get_kokoro_voices(self) -> list[str]:
         try:
@@ -1692,7 +1747,7 @@ class MainWindow(QMainWindow):
         scroll_config.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_config.setMinimumWidth(380)
 
-        self.panel_config = ConfigPanel(self._models, self._voices)
+        self.panel_config = ConfigPanel(self._models, self._voices, self._vibevoice_voices)
         scroll_config.setWidget(self.panel_config)
         splitter.addWidget(scroll_config)
 

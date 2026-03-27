@@ -31,6 +31,7 @@ DEFAULTS: dict = {
     "model":               "qwen3",
     "max_scenes":          8,
     "chunk_size":          4096,
+    "tts_engine":          "kokoro",
     "voice":               "im_nicola",
     "speed":               100,          # slider int (50–200); divide by 100 → actual speed
     "resolution":          "1920×1080 (Full HD)",
@@ -132,6 +133,7 @@ def save(config: dict) -> None:
         "model":               config.get("model",               DEFAULTS["model"]),
         "max_scenes":          config.get("max_scenes",          DEFAULTS["max_scenes"]),
         "chunk_size":          config.get("chunk_size",        DEFAULTS["chunk_size"]),
+        "tts_engine":          config.get("tts_engine",          DEFAULTS["tts_engine"]),
         "voice":               config.get("voice",               DEFAULTS["voice"]),
         # Convert float speed → slider int so load_from_config() can apply it directly
         "speed":               int(config.get("speed", 1.0) * 100),
@@ -177,6 +179,7 @@ def save_from_panel(panel) -> None:
         "model":               panel.combo_model.currentText(),
         "max_scenes":          panel.spin_max_scenes.value(),
         "chunk_size":        panel.spin_chunk_size.value(),
+        "tts_engine":          panel.combo_engine.currentData(),
         "voice":               panel.combo_voice.currentText(),
         "speed":               panel.slider_speed.value() / 100.0,
         "resolution":          res_map.get(panel.combo_res.currentText(), (1920, 1080)),

@@ -49,3 +49,7 @@ PyQt6>=6.6.0
 #     Ubuntu/Debian: sudo apt install libcairo2 libcairo2-dev
 #     macOS:         brew install cairo
 #     Arch:          sudo pacman -S cairo
+
+# TTS - VibeVoice (Optional, requires Git and flash-attn)
+# pip install git+https://github.com/microsoft/VibeVoice.git
+# pip install flash-attn --no-build-isolation

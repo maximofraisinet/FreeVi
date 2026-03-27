@@ -22,7 +22,9 @@ FreeVi transforms PDF documents into dynamic audiovisual narratives. Choose betw
 - **Dynamic Subtitles:** Choose between fast sentence-level captions or "Pro" word-level sync powered by Whisper AI (perfect for vertical Shorts/Reels).
 - **Smart Icon Selection:** 6,000+ icons from Tabler Icons, automatically selected based on content.
 - **Smart Processing:** Local LLM (Ollama) adapts text into natural narration scripts.
-- **Natural Voices:** Multilingual TTS using Kokoro ONNX.
+- **Natural Voices (Dual Engine):** Choose between two powerful Text-to-Speech engines:
+  - **Kokoro v1.0 (ONNX):** Ultra-fast, lightweight, and supports multiple languages.
+  - **Microsoft VibeVoice 0.5B (PyTorch):** Premium, conversational voices for highly natural documentaries (requires 6GB+ VRAM GPU).
 - **Customizable Themes:** Tokyo Night, Executive, and Minimal slide themes.
 - **JSON Import:** Bring your own scenes (narrator text + video/slide data) via JSON — no PDF or LLM needed.
 - **Dual Interface:** Intuitive GUI or flexible CLI.
@@ -32,6 +34,7 @@ FreeVi transforms PDF documents into dynamic audiovisual narratives. Choose betw
 - **Python 3.10+** installed on your system.
 - **Ollama:** Installed and running (`ollama serve`). Download a model: `ollama pull qwen3`.
 - **Kokoro Models:** Place `kokoro-v1.0.onnx` and `voices-v1.0.bin` in `./kokoro-v1.0/`.
+- **VibeVoice Models (Optional):** Requires a GPU with at least 6GB VRAM and `flash-attn`.
 - **Pexels API Key:** Required only for Pexels video/image mode.
 
 ## Installation
@@ -59,12 +62,28 @@ brew install cairo
 sudo pacman -S cairo
 ```
 
-### 3. Download Kokoro Voice Models
+### 3. Download TTS Voice Models
 
+**Option A: Kokoro (Fast, Low Resource)**
 1. Download from [kokoro-onnx releases](https://github.com/thewh1teagle/kokoro-onnx/releases):
    - `kokoro-v1.0.onnx`
    - `voices-v1.0.bin`
 2. Place both in `./kokoro-v1.0/`.
+
+**Option B: VibeVoice (Premium, GPU Required)**
+1. Install VibeVoice and Flash Attention:
+   ```bash
+   # We strongly recommend Python 3.12 and PyTorch 2.5 to avoid compiling Flash Attention from source.
+   pip install git+https://github.com/microsoft/VibeVoice.git
+   pip install flash-attn --no-build-isolation
+   ```
+2. Download the pre-cached voice prompts using `wget` and extract them into the `vibevoices` folder:
+   ```bash
+   wget https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B/resolve/main/prompts.tar.gz
+   tar -xzf prompts.tar.gz
+   mv prompts/ vibevoices/
+   rm prompts.tar.gz
+   ```
 
 ### 4. Configure Environment Variables (Optional)
 
@@ -166,7 +185,8 @@ python freevi.py document.pdf \
 |------|-------------|---------|
 | `--orientation` | Video orientation (`landscape`, `portrait`, `square`). | `landscape` |
 | `--resolution` | Output resolution in WxH format (e.g., `1920x1080`). Validates against orientation. | Auto |
-| `--voice` | Kokoro voice ID (e.g., `af_heart`, `bm_daniel`, `em_alex`). | `af_heart` |
+| `--tts-engine` | `kokoro` or `vibevoice`. | `kokoro` |
+| `--voice` | Voice ID (Kokoro: `af_heart` / VibeVoice: `sp-Spk0_woman`). | `af_heart` |
 | `--lang` | Narration language code (see Languages section below). | `a` |
 | `--speed` | Narration speed multiplier. | `1.0` |
 | `--subtitles` | Subtitle position (`bottom`, `middle`, `top`). Omit for no subtitles. | None |
