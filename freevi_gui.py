@@ -1392,6 +1392,13 @@ class ConfigPanel(QWidget):
         # Chunk size
         self.spin_chunk_size.setValue(int(cfg.get("chunk_size", 4096)))
 
+        # TTS Engine — must be set BEFORE language and voice
+        engine_val = cfg.get("tts_engine", "kokoro")
+        idx = self.combo_engine.findData(engine_val)
+        if idx >= 0:
+            self.combo_engine.setCurrentIndex(idx)
+        self._on_engine_changed()
+
         # Language — must be set BEFORE voice so _on_language_changed populates
         # the correct voice list first
         lang_code = cfg.get("lang_code", "e")
