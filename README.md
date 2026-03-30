@@ -302,6 +302,6 @@ Tabler Icons is an open-source SVG icon library by [Tabler](https://tabler.io/).
 
 ## License
 
-This project is released into under the **MIT License**. See [LICENSE](LICENSE) for details.
+This project is released under the **MIT License**. See [LICENSE](LICENSE) for details.
 
 **Note:** The icon library (Tabler Icons) is licensed separately under the MIT License. See credits above.
